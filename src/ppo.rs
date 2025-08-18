@@ -1,0 +1,333 @@
+use anyhow::Result;
+use burn::backend::ndarray::NdArrayDevice;
+use burn::backend::NdArray;
+use burn::module::Module;
+use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
+use burn::{
+    backend::Autodiff,
+    nn::{Linear, LinearConfig, Relu, loss::HuberLossConfig},
+    optim::{GradientsParams, Optimizer},
+    prelude::Backend,
+    tensor::{
+        Int, Tensor, TensorData, activation::softmax, backend::AutodiffBackend, cast::ToElement,
+    },
+};
+use gym_rs::{
+    core::{ActionReward, Env},
+    envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
+    utils::renderer::RenderMode,
+};
+use rand::{Rng, distr::weighted::WeightedIndex, rng};
+
+// Hyperparameters
+const LEARNING_RATE: f64 = 0.0005;
+const GAMMA: f32 = 0.98;
+const LAMBDA: f32 = 0.95;
+const EPS_CLIP: f32 = 0.1;
+const K_EPOCH: usize = 3;
+const T_HORIZON: usize = 20; // Time Horizon, the rounds passed before starting a training
+
+/// What's included in the data
+///
+/// The difference is that the Python version does not need to know the data size at "compile time",
+/// but Rust does.
+#[derive(Debug, Clone)]
+struct Data {
+    pub state: [f32; 4], // Current state, correspond to `s` in the original Python code. Below are the same.
+    pub action: u8,      // Action taken, correspond to `a`
+    pub reward: f32,     // Reward received, correspond to `r`
+    pub next_state: [f32; 4], // Next state, correspond to `s_prime`
+    pub action_prob: f64, // Action probability, correspond to `prob_a`
+    pub done: bool,      // Episode done flag, correspond to `done`
+}
+
+impl Data {
+    pub fn from_step_result(
+        raw_state: CartPoleObservation,
+        step: ActionReward<CartPoleObservation, ()>,
+        action: u8,
+        action_prob: f64,
+    ) -> Self {
+        let mut original_state: [f32; 4] = [0.0; 4];
+        let mut next_state: [f32; 4] = [0.0; 4];
+
+        for (index, element) in Vec::from(step.observation).iter().enumerate() {
+            next_state[index] = element.to_f32();
+        }
+
+        for (index, element) in Vec::from(raw_state).iter().enumerate() {
+            original_state[index] = element.to_f32();
+        }
+
+        Self {
+            state: original_state,
+            action,
+            reward: step.reward.to_f32() / 100.0,
+            next_state,
+            action_prob,
+            done: step.done,
+        }
+    }
+}
+
+/// Data in tensors
+///
+/// Tensor<B, 2> reads: a tensor of two dimensions
+#[derive(Debug, Clone)]
+pub struct DataTensor<B>
+where
+    B: Backend,
+{
+    pub state: Tensor<B, 2>,
+    pub action: Tensor<B, 2, Int>,
+    pub reward: Tensor<B, 2>,
+    pub next_state: Tensor<B, 2>,
+    pub action_prob: Tensor<B, 2>,
+    pub done: Tensor<B, 2>,
+}
+
+#[derive(Debug, Module)]
+pub struct PPOModule<B: Backend> {
+    fc1: Linear<B>,
+    fc_pi: Linear<B>,
+    fc_v: Linear<B>,
+}
+
+/// Rust version of the Python PPO implementation
+///
+/// Reference(s):
+/// - CartPole V1: https://gymnasium.farama.org/environments/classic_control/cart_pole/
+pub struct PPO<T>
+where
+    T: AutodiffBackend,
+{
+    data: Vec<Data>,
+    module: PPOModule<T>,
+    optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T>,
+    device: T::Device,
+}
+
+impl<T> PPO<T>
+where
+    T: AutodiffBackend,
+{
+    pub fn new(device: T::Device) -> Self {
+        // nn module in Burn: https://burn.dev/docs/burn/nn/index.html
+
+        // `LinearConfig` is an equavalance of Linear in torch.nn
+        // The difference is that the Rust Burn library requires initializing the actual `Linear` object from a Config builder.
+        // In the below references section, I posted the codebase that I learned when handling the `device` variable required
+        // by `LinearConfig`'s `init` method.
+        //
+        // Reference(s):
+        // - `LinearConfig` usage: https://github.com/nanoporetech/modkit/blob/bc8a0f118e29aef0dcefdb7aa31044e343a163c9/ochm/src/models.rs#L6
+        let fc1: Linear<T> = LinearConfig::new(4, 256).init(&device);
+        let fc_pi: Linear<T> = LinearConfig::new(256, 2).init(&device);
+        let fc_v: Linear<T> = LinearConfig::new(256, 1).init(&device);
+
+        // The original Python code did not manipulate nor add new flavors to the beta_1 and beta_2 values.
+        // Therefore, we use the default value provided by `torch.optim.Adam`
+        //
+        // Reference(s):
+        // - `AdamConfig` usage: https://docs.pytorch.org/docs/stable/generated/torch.optim.Adam.html#adam
+        let optimizer: OptimizerAdaptor<Adam, _, _> = AdamConfig::new()
+            .with_beta_1(0.9)
+            .with_beta_2(0.999)
+            .with_epsilon(1e-08)
+            .with_weight_decay(Some(WeightDecayConfig::new(0.0)))
+            .init();
+
+        Self {
+            module: PPOModule { fc1, fc_pi, fc_v },
+            optimizer,
+            data: vec![],
+            device,
+        }
+    }
+
+    /// Add data to the buffer
+    ///
+    /// The `data` field in `PPO` will be used for training at the end of each time horizon
+    pub fn put_data(&mut self, data: Data) {
+        self.data.push(data);
+    }
+
+    /// Prepare the training data.
+    /// According to PPO's design, we only use the latest experiences, aka data, to train the model
+    pub fn make_batch(&mut self) -> DataTensor<T> {
+        let mut states: [[f32; 4]; T_HORIZON] = [[0.0; 4]; T_HORIZON];
+        let mut actions: [[u8; 1]; T_HORIZON] = [[0; 1]; T_HORIZON];
+        let mut rewards: [[f32; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
+        let mut next_states: [[f32; 4]; T_HORIZON] = [[0.0; 4]; T_HORIZON];
+        let mut action_probs: [[f64; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
+        let mut dones: [[u8; 1]; T_HORIZON] = [[0; 1]; T_HORIZON];
+
+        for (index, data) in self.data.iter().enumerate() {
+            states[index] = data.state;
+            actions[index] = [data.action];
+            rewards[index] = [data.reward];
+            next_states[index] = data.next_state;
+            action_probs[index] = [data.action_prob];
+
+            if data.done {
+                dones[index] = [0];
+                continue;
+            }
+
+            dones[index] = [1];
+        }
+
+        let state = Tensor::from_data(states, &self.device);
+        let action = Tensor::from_data(actions, &self.device);
+        let reward = Tensor::from_data(rewards, &self.device);
+        let next_state = Tensor::from_data(next_states, &self.device);
+        let action_prob = Tensor::from_data(action_probs, &self.device);
+        let done = Tensor::from_data(dones, &self.device);
+
+        self.data.clear();
+
+        DataTensor {
+            state,
+            action,
+            reward,
+            next_state,
+            action_prob,
+            done,
+        }
+    }
+
+    /// The policy function
+    pub fn pi(&mut self, x: Tensor<T, 2>, softmax_dim: Option<usize>) -> Tensor<T, 2> {
+        // Softmax dimension is default to 0
+        let mut softmax_dimension: usize = 0;
+        if let Some(dim) = softmax_dim {
+            softmax_dimension = dim;
+        }
+
+        let relu: Relu = Relu::new();
+
+        let x = self.module.fc1.forward(x);
+        let x = relu.forward(x);
+        let x = self.module.fc_pi.forward(x);
+
+        // Apply max-shift before computing the softmax. 
+        // Burn does not automatically handle this like PyTorch. 
+        let x = x.clone() - x.clone().max_dim(1);
+
+        // Return the probability
+        softmax(x, softmax_dimension)
+    }
+
+    pub fn v(&mut self, x: Tensor<T, 2>) -> Tensor<T, 2> {
+        let relu = Relu::new();
+
+        let x = self.module.fc1.forward(x);
+        let x = relu.forward(x);
+
+        self.module.fc_v.forward(x)
+    }
+
+    pub fn train_net(&mut self) {
+        let data_tensor = self.make_batch();
+
+        for _ in 0..K_EPOCH {
+            let td_target = data_tensor.reward.clone()
+                + GAMMA * self.v(data_tensor.next_state.clone()) * data_tensor.done.clone();
+            let delta = td_target.clone() - self.v(data_tensor.state.clone());
+            let delta = delta.detach();
+
+            let mut advantage_list: [[f32; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
+            let mut advantage: f32 = 0.0;
+            for (index_delta_t, delta_t) in delta.flip([0]).iter_dim(0).enumerate() {
+                advantage =
+                    GAMMA * LAMBDA * advantage + delta_t.to_data().to_vec::<f32>().unwrap()[0];
+                advantage_list[index_delta_t] = [advantage];
+            }
+
+            advantage_list.reverse();
+            let advantage_tensor: Tensor<T, 2> = Tensor::from_data(advantage_list, &self.device);
+
+            let pi = self.pi(data_tensor.state.clone(), Some(1));
+            let pi_action = pi.gather(1, data_tensor.action.clone());
+            // We use clamp_min here to prevent NaN values 
+            let ratio = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
+
+            let unclipped_surrogate_advantage_1 = ratio.clone() * advantage_tensor.clone();
+            let unclipped_surrogate_advantage_2 =
+                Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
+            let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init(); // This is also known as `smooth L1 loss in the Python code
+            let loss = -unclipped_surrogate_advantage_1.min_pair(unclipped_surrogate_advantage_2)
+                + huber_loss
+                    .forward_no_reduction(self.v(data_tensor.state.clone()), td_target.detach());
+
+            let gradients = loss.mean().backward();
+            let gradients_params = GradientsParams::from_grads(gradients, &self.module);
+
+            self.module = self
+                .optimizer
+                .step(LEARNING_RATE, self.module.clone(), gradients_params);
+        }
+    }
+}
+
+/// The main training loop
+pub fn run_session() -> Result<()> {
+    let mut env = CartPoleEnv::new(RenderMode::Human);
+
+    let device = NdArrayDevice::default();
+    let mut model: PPO<Autodiff<NdArray>> = PPO::new(device);
+
+    let mut score: f32 = 0.0;
+    let print_interval: usize = 20;
+
+    for n_epi in 0..10000 {
+        let (mut raw_state, _) = env.reset(None, false, None);
+        let mut done: bool = false;
+
+        while !done {
+            for _ in 0..T_HORIZON {
+                let state_data = TensorData::new(Vec::from(raw_state), [1, 4]); // Reflect the shape of the state, which is 1-dimensional array with 4 elements
+                let state = Tensor::from_data(state_data, &device);
+                let probability = model.pi(state, None);
+
+                let probability_vector: Vec<f32> = probability
+                    .to_data()
+                    .convert::<f32>()
+                    .to_vec::<f32>()
+                    .unwrap();
+                let distributions = WeightedIndex::new(&probability_vector)?;
+                let mut thread_rng = rng();
+                let action: usize = thread_rng.sample(distributions);
+
+                let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+                raw_state = result.observation; // CartPoleObservation implemented Copy. That's why it is not "moved" here.
+                done = result.done;
+
+                score += result.reward.to_f32() / 100.0;
+
+                let data: Data = Data::from_step_result(
+                    raw_state,
+                    result,
+                    action as u8,
+                    probability_vector[action] as f64,
+                );
+                model.put_data(data);
+
+                if done {
+                    break;
+                }
+            }
+
+            model.train_net();
+        }
+
+        if (n_epi % print_interval == 0) && (n_epi != 0) {
+            println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
+            score = 0.0;
+        }
+    }
+
+    env.close();
+
+    Ok(())
+}
