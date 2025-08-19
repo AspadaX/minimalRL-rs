@@ -91,7 +91,7 @@ where
 
 #[derive(Debug, Module)]
 pub struct PPOModule<B: Backend> {
-    fc1: Linear<B>,
+    fc1: Linear<B>, // fc -> Fullly Connected
     fc_pi: Linear<B>,
     fc_v: Linear<B>,
 }
