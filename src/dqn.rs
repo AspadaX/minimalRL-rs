@@ -5,6 +5,7 @@ use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
 use burn::module::Module;
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
+use burn::record::Record;
 use burn::{
     backend::Autodiff,
     nn::{Linear, LinearConfig, Relu, loss::HuberLossConfig},
@@ -122,7 +123,25 @@ where
         }
     }
     
-    pub fn forward(&mut self, x: Tensor<B, 2>) -> Tensor<B, 2> {}
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let relu = Relu::new();
+        let x = relu.forward(self.fc1.forward(x));
+        let x = relu.forward(self.fc2.forward(x));
+        
+        self.fc3.forward(x)
+    }
     
-    pub fn sample_action(&mut self, observation: Tensor<B, 2>, epsilon: f32) -> {}
+    /// Either use the model output as the action, 
+    /// or to use a random digit between 0 and 1
+    pub fn sample_action(&mut self, observation: Tensor<B, 2>, epsilon: f32) -> usize {
+        let output = self.forward(observation);
+        let coin: f32 = rand::random();
+        if coin < epsilon {
+            return rand::random_range(0..=1);
+        }
+        
+        let argmax_tensor = output.argmax(1);
+        
+        argmax_tensor.into_scalar().to_usize()
+    }
 }
