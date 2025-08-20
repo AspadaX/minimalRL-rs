@@ -70,11 +70,11 @@ impl Data {
     }
 }
 
-/// Data in tensors
+/// A batch of data
 ///
 /// Tensor<B, 2> reads: a tensor of two dimensions
 #[derive(Debug, Clone)]
-pub struct DataTensor<B>
+pub struct DataBatch<B>
 where
     B: Backend,
 {
@@ -154,7 +154,7 @@ where
 
     /// Prepare the training data.
     /// According to PPO's design, we only use the latest experiences, aka data, to train the model
-    pub fn make_batch(&mut self) -> DataTensor<T> {
+    pub fn make_batch(&mut self) -> DataBatch<T> {
         let mut states: [[f32; 4]; T_HORIZON] = [[0.0; 4]; T_HORIZON];
         let mut actions: [[u8; 1]; T_HORIZON] = [[0; 1]; T_HORIZON];
         let mut rewards: [[f32; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
@@ -186,7 +186,7 @@ where
 
         self.data.clear();
 
-        DataTensor {
+        DataBatch {
             state,
             action,
             reward,
@@ -238,7 +238,7 @@ where
     }
 
     pub fn train_net(&mut self) {
-        let data_tensor: DataTensor<T> = self.make_batch();
+        let data_tensor: DataBatch<T> = self.make_batch();
 
         for _ in 0..K_EPOCH {
             let td_target: Tensor<T, 2> = data_tensor.reward.clone()
@@ -257,16 +257,24 @@ where
             advantage_list.reverse();
             let advantage_tensor: Tensor<T, 2> = Tensor::from_data(advantage_list, &self.device);
 
-            let pi = self.pi(data_tensor.state.clone(), Some(1));
+            let pi: Tensor<T, 2> = self.pi(data_tensor.state.clone(), Some(1));
             let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.action.clone());
             // We use clamp_min here to prevent NaN values 
             let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
 
-            let unclipped_surrogate_advantage_1: Tensor<T, 2> = ratio.clone() * advantage_tensor.clone();
-            let unclipped_surrogate_advantage_2: Tensor<T, 2> =
+            // We have both unclipped and clipped surrogate objective here, 
+            // then we need to choose the minimal one from them. 
+            // This is to ensure the knowledge to learn, aka gradient update, won't be too aggressive. 
+            let unclipped_surrogate_advantage: Tensor<T, 2> = ratio.clone() * advantage_tensor.clone();
+            let clipped_surrogate_advantage: Tensor<T, 2> =
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
-            let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init(); // This is also known as `smooth L1 loss in the Python code
-            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage_1.min_pair(unclipped_surrogate_advantage_2)
+            
+            // This is also known as `smooth L1 loss` in PyTorch. 
+            let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
+            
+            // We choose the minimal clipped objective by using `min_pair`. 
+            // Then we calculate the loss with it. 
+            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage.min_pair(clipped_surrogate_advantage)
                 + huber_loss
                     .forward_no_reduction(self.v(data_tensor.state.clone()), td_target.detach());
 
