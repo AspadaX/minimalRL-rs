@@ -297,7 +297,7 @@ pub fn run_session() -> Result<()> {
     let print_interval: usize = 20;
 
     for n_epi in 0..10000 {
-        let (raw_state, _) = env.reset(None, false, None);
+        let (mut raw_state, _) = env.reset(None, false, None);
         let mut done: bool = false;
 
         while !done {
@@ -318,13 +318,15 @@ pub fn run_session() -> Result<()> {
                 let action: usize = thread_rng.sample(distributions);
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+                // Now, this turn's observation has become the next turn's previous observation
+                raw_state = result.observation;
                 done = result.done;
 
                 // Reward is already f32, no need to turn into floating points
                 score += result.reward.to_f32();
 
                 let data: Data = Data::from_step_result(
-                    result.observation,
+                    raw_state,
                     result,
                     action as u8,
                     probability_vector[action] as f64,
