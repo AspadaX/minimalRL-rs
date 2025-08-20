@@ -34,7 +34,7 @@ const T_HORIZON: usize = 20; // Time Horizon, the rounds passed before starting 
 /// The difference is that the Python version does not need to know the data size at "compile time",
 /// but Rust does.
 #[derive(Debug, Clone)]
-struct Data {
+pub struct Data {
     pub state: [f32; 4], // Current state, correspond to `s` in the original Python code. Below are the same.
     pub action: u8,      // Action taken, correspond to `a`
     pub reward: f32,     // Reward received, correspond to `r`
@@ -297,7 +297,7 @@ pub fn run_session() -> Result<()> {
     let print_interval: usize = 20;
 
     for n_epi in 0..10000 {
-        let (mut raw_state, _) = env.reset(None, false, None);
+        let (raw_state, _) = env.reset(None, false, None);
         let mut done: bool = false;
 
         while !done {
@@ -318,13 +318,13 @@ pub fn run_session() -> Result<()> {
                 let action: usize = thread_rng.sample(distributions);
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
-                raw_state = result.observation; // CartPoleObservation implemented Copy. That's why it is not "moved" here.
                 done = result.done;
 
-                score += result.reward.to_f32() / 100.0;
+                // Reward is already f32, no need to turn into floating points
+                score += result.reward.to_f32();
 
                 let data: Data = Data::from_step_result(
-                    raw_state,
+                    result.observation,
                     result,
                     action as u8,
                     probability_vector[action] as f64,
