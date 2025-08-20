@@ -1,8 +1,10 @@
 use anyhow::Result;
+use burn::backend::autodiff::checkpoint::state;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
 use burn::module::Module;
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
+use burn::tensor::Shape;
 use burn::{
     backend::Autodiff,
     nn::{Linear, LinearConfig, Relu, loss::HuberLossConfig},
@@ -220,10 +222,6 @@ where
         let x: Tensor<T, X> = relu.forward(x);
         let x: Tensor<T, X> = self.module.fc_pi.forward(x);
 
-        // Apply max-shift before computing the softmax. 
-        // Burn does not automatically handle this like PyTorch. 
-        let x: Tensor<T, X> = x.clone() - x.clone().max_dim(1);
-
         // Return the probability
         softmax(x, softmax_dimension)
     }
@@ -305,7 +303,7 @@ pub fn run_session() -> Result<()> {
         while !done {
             for _ in 0..T_HORIZON {
                 // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-                let state_data: TensorData = TensorData::new(Vec::from(raw_state), [1, 4]);
+                let state_data: TensorData = TensorData::new(Vec::from(raw_state), Shape::new([4]));
                 let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
                 // Feed the state to the policy network
                 let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
