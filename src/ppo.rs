@@ -177,12 +177,12 @@ where
             dones[index] = [1];
         }
 
-        let state = Tensor::from_data(states, &self.device);
-        let action = Tensor::from_data(actions, &self.device);
-        let reward = Tensor::from_data(rewards, &self.device);
-        let next_state = Tensor::from_data(next_states, &self.device);
-        let action_prob = Tensor::from_data(action_probs, &self.device);
-        let done = Tensor::from_data(dones, &self.device);
+        let state: Tensor<T, 2> = Tensor::from_data(states, &self.device);
+        let action: Tensor<T, 2, Int> = Tensor::from_data(actions, &self.device);
+        let reward: Tensor<T, 2> = Tensor::from_data(rewards, &self.device);
+        let next_state: Tensor<T, 2> = Tensor::from_data(next_states, &self.device);
+        let action_prob: Tensor<T, 2> = Tensor::from_data(action_probs, &self.device);
+        let done: Tensor<T, 2> = Tensor::from_data(dones, &self.device);
 
         self.data.clear();
 
@@ -197,7 +197,17 @@ where
     }
 
     /// The policy function
-    pub fn pi(&mut self, x: Tensor<T, 2>, softmax_dim: Option<usize>) -> Tensor<T, 2> {
+    /// 
+    /// We will use the policy function in two places, 
+    /// one is when training the model,
+    /// another is when inferencing the model. 
+    /// 
+    /// Since the two will use different tensor dimensions, 
+    /// using a constant generic parameter, const X: usize, 
+    /// will allowing the differences. 
+    /// 
+    /// The `x` here will be determined when you compile the code. 
+    pub fn pi<const X: usize>(&mut self, x: Tensor<T, X>, softmax_dim: Option<usize>) -> Tensor<T, X> {
         // Softmax dimension is default to 0
         let mut softmax_dimension: usize = 0;
         if let Some(dim) = softmax_dim {
@@ -206,35 +216,35 @@ where
 
         let relu: Relu = Relu::new();
 
-        let x = self.module.fc1.forward(x);
-        let x = relu.forward(x);
-        let x = self.module.fc_pi.forward(x);
+        let x: Tensor<T, X> = self.module.fc1.forward(x);
+        let x: Tensor<T, X> = relu.forward(x);
+        let x: Tensor<T, X> = self.module.fc_pi.forward(x);
 
         // Apply max-shift before computing the softmax. 
         // Burn does not automatically handle this like PyTorch. 
-        let x = x.clone() - x.clone().max_dim(1);
+        let x: Tensor<T, X> = x.clone() - x.clone().max_dim(1);
 
         // Return the probability
         softmax(x, softmax_dimension)
     }
 
     pub fn v(&mut self, x: Tensor<T, 2>) -> Tensor<T, 2> {
-        let relu = Relu::new();
+        let relu: Relu = Relu::new();
 
-        let x = self.module.fc1.forward(x);
-        let x = relu.forward(x);
+        let x: Tensor<T, 2> = self.module.fc1.forward(x);
+        let x: Tensor<T, 2> = relu.forward(x);
 
         self.module.fc_v.forward(x)
     }
 
     pub fn train_net(&mut self) {
-        let data_tensor = self.make_batch();
+        let data_tensor: DataTensor<T> = self.make_batch();
 
         for _ in 0..K_EPOCH {
-            let td_target = data_tensor.reward.clone()
+            let td_target: Tensor<T, 2> = data_tensor.reward.clone()
                 + GAMMA * self.v(data_tensor.next_state.clone()) * data_tensor.done.clone();
-            let delta = td_target.clone() - self.v(data_tensor.state.clone());
-            let delta = delta.detach();
+            let delta: Tensor<T, 2> = td_target.clone() - self.v(data_tensor.state.clone());
+            let delta: Tensor<T, 2> = delta.detach();
 
             let mut advantage_list: [[f32; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
             let mut advantage: f32 = 0.0;
@@ -248,20 +258,20 @@ where
             let advantage_tensor: Tensor<T, 2> = Tensor::from_data(advantage_list, &self.device);
 
             let pi = self.pi(data_tensor.state.clone(), Some(1));
-            let pi_action = pi.gather(1, data_tensor.action.clone());
+            let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.action.clone());
             // We use clamp_min here to prevent NaN values 
-            let ratio = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
+            let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
 
-            let unclipped_surrogate_advantage_1 = ratio.clone() * advantage_tensor.clone();
-            let unclipped_surrogate_advantage_2 =
+            let unclipped_surrogate_advantage_1: Tensor<T, 2> = ratio.clone() * advantage_tensor.clone();
+            let unclipped_surrogate_advantage_2: Tensor<T, 2> =
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
             let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init(); // This is also known as `smooth L1 loss in the Python code
-            let loss = -unclipped_surrogate_advantage_1.min_pair(unclipped_surrogate_advantage_2)
+            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage_1.min_pair(unclipped_surrogate_advantage_2)
                 + huber_loss
                     .forward_no_reduction(self.v(data_tensor.state.clone()), td_target.detach());
 
-            let gradients = loss.mean().backward();
-            let gradients_params = GradientsParams::from_grads(gradients, &self.module);
+            let gradients: <T as AutodiffBackend>::Gradients = loss.mean().backward();
+            let gradients_params: GradientsParams = GradientsParams::from_grads(gradients, &self.module);
 
             self.module = self
                 .optimizer
@@ -286,17 +296,19 @@ pub fn run_session() -> Result<()> {
 
         while !done {
             for _ in 0..T_HORIZON {
-                let state_data = TensorData::new(Vec::from(raw_state), [1, 4]); // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-                let state = Tensor::from_data(state_data, &device);
-                let probability = model.pi(state, None);
+                // Reflect the shape of the state, which is 1-dimensional array with 4 elements
+                let state_data: TensorData = TensorData::new(Vec::from(raw_state), [1, 4]);
+                let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
+                // Feed the state to the policy network
+                let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
 
                 let probability_vector: Vec<f32> = probability
                     .to_data()
                     .convert::<f32>()
                     .to_vec::<f32>()
                     .unwrap();
-                let distributions = WeightedIndex::new(&probability_vector)?;
-                let mut thread_rng = rng();
+                let distributions: WeightedIndex<f32> = WeightedIndex::new(&probability_vector)?;
+                let mut thread_rng: rand::prelude::ThreadRng = rng();
                 let action: usize = thread_rng.sample(distributions);
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
