@@ -27,7 +27,8 @@ const GAMMA: f32 = 0.98;
 const LAMBDA: f32 = 0.95;
 const EPS_CLIP: f32 = 0.1;
 const K_EPOCH: usize = 3;
-const T_HORIZON: usize = 20; // Time Horizon, the rounds passed before starting a training
+// Time Horizon, the rounds passed before starting a training
+const T_HORIZON: usize = 20; 
 
 /// What's included in the data
 ///
@@ -155,7 +156,7 @@ where
     }
 
     /// Prepare the training data.
-    /// According to PPO's design, we only use the latest experiences, aka data, to train the model
+    /// According to PPO's design, we use the latest experiences, aka data, to train the model
     pub fn make_batch(&mut self) -> DataBatch<T> {
         let mut states: [[f32; 4]; T_HORIZON] = [[0.0; 4]; T_HORIZON];
         let mut actions: [[u8; 1]; T_HORIZON] = [[0; 1]; T_HORIZON];
@@ -239,6 +240,7 @@ where
         let data_tensor: DataBatch<T> = self.make_batch();
 
         for _ in 0..K_EPOCH {
+            // Calculate the advantage
             let td_target: Tensor<T, 2> = data_tensor.reward.clone()
                 + GAMMA * self.v(data_tensor.next_state.clone()) * data_tensor.done.clone();
             let delta: Tensor<T, 2> = td_target.clone() - self.v(data_tensor.state.clone());
@@ -255,9 +257,11 @@ where
             advantage_list.reverse();
             let advantage_tensor: Tensor<T, 2> = Tensor::from_data(advantage_list, &self.device);
 
+            // Calculate the ratio for clipping
             let pi: Tensor<T, 2> = self.pi(data_tensor.state.clone(), Some(1));
             let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.action.clone());
             // We use clamp_min here to prevent NaN values 
+            // This is equal to a / b 
             let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
 
             // We have both unclipped and clipped surrogate objective here, 
