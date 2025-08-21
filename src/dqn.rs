@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use anyhow::Result;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
-use burn::module::Module;
+use burn::module::{AutodiffModule, Module};
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
 use burn::record::Record;
 use burn::{
@@ -40,7 +40,7 @@ struct Data {
 }
 
 #[derive(Debug, Clone)]
-pub struct DataTensor<B>
+pub struct DataBatch<B>
 where
     B: Backend,
 {
@@ -64,7 +64,7 @@ impl ReplayBuffer {
         self.buffer.push_back(transition); // add to the right end of the deque
     }
     
-    pub fn sample<B: Backend>(&mut self, device: &B::Device) -> DataTensor<B> {
+    pub fn sample<B: Backend>(&mut self, device: &B::Device) -> DataBatch<B> {
         let mut rng: rand::prelude::ThreadRng = rng();
         let mini_batches: Vec<&Data> = self.buffer.iter().choose_multiple(&mut rng, BATCH_SIZE);
         
@@ -94,7 +94,7 @@ impl ReplayBuffer {
         let next_state = Tensor::from_data(next_states, device);
         let done = Tensor::from_data(dones, device);
         
-        DataTensor {
+        DataBatch {
             state, action, reward, next_state, done
         }
     }
@@ -143,5 +143,26 @@ where
         let argmax_tensor = output.argmax(1);
         
         argmax_tensor.into_scalar().to_usize()
+    }
+}
+
+pub fn train<M: AutodiffModule<B>, B: AutodiffBackend>(
+    q_net: QNet<B>, 
+    target_network: QNet<B>, 
+    replay_buffer: &mut ReplayBuffer, 
+    optimizer: impl Optimizer<M, B>,
+    device: &B::Device
+) {
+    for _ in 0..10 {
+        let data_batch = replay_buffer.sample::<B>(device);
+        
+        let q_net_output = q_net.forward(data_batch.state);
+        let q_net_output_to_action = q_net_output.gather(1, data_batch.action);
+        let target_network_output: Tensor<B, 2> = target_network.forward(data_batch.next_state)
+            .max_dim(1)
+            .select(0, Tensor::from_data([0], device))
+            .unsqueeze_dim(1); // DIVERGENCE: differ from the original python code 
+        
+        let target = 
     }
 }
