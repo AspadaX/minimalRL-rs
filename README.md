@@ -1,6 +1,6 @@
 # minimalRL-rs
 
-A Rust implementation of [minimalRL](https://github.com/seungeunrho/minimalRL), basic reinforcement learning with minimal codes. The Rust implementation is based on Burn and CPU. 
+A Rust implementation of [minimalRL](https://github.com/seungeunrho/minimalRL), basic reinforcement learning with minimal codes. The Rust implementation is based on [Burn](https://github.com/tracel-ai/burn) and CPU. 
 
 Hopefully, this repo can inspire more people to use Rust in the AI field. 
 
