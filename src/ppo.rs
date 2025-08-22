@@ -133,7 +133,7 @@ where
         //
         // Reference(s):
         // - `AdamConfig` usage: https://docs.pytorch.org/docs/stable/generated/torch.optim.Adam.html#adam
-        let optimizer: OptimizerAdaptor<Adam, _, _> = AdamConfig::new()
+        let optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T> = AdamConfig::new()
             .with_beta_1(0.9)
             .with_beta_2(0.999)
             .with_epsilon(1e-08)
@@ -272,6 +272,7 @@ where
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
             
             // This is also known as `smooth L1 loss` in PyTorch. 
+            // The 1.0 delta value originates from PyTorch default.
             let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
             
             // We choose the minimal clipped objective by using `min_pair`. 

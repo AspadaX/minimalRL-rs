@@ -4,6 +4,7 @@ use anyhow::Result;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
 use burn::module::{AutodiffModule, Module};
+use burn::optim::SimpleOptimizer;
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
 use burn::record::Record;
 use burn::{
@@ -146,23 +147,87 @@ where
     }
 }
 
-pub fn train<M: AutodiffModule<B>, B: AutodiffBackend>(
+pub fn train<O: SimpleOptimizer<B::InnerBackend>, B: AutodiffBackend>(
     q_net: QNet<B>, 
     target_network: QNet<B>, 
     replay_buffer: &mut ReplayBuffer, 
-    optimizer: impl Optimizer<M, B>,
+    optimizer: &mut OptimizerAdaptor<O, QNet<B>, B>,
     device: &B::Device
-) {
+) -> QNet<B> {
+    let mut q_net_optimized = q_net;
     for _ in 0..10 {
         let data_batch = replay_buffer.sample::<B>(device);
         
-        let q_net_output = q_net.forward(data_batch.state);
+        let q_net_output = q_net_optimized.forward(data_batch.state);
         let q_net_output_to_action = q_net_output.gather(1, data_batch.action);
         let target_network_output: Tensor<B, 2> = target_network.forward(data_batch.next_state)
             .max_dim(1)
             .select(0, Tensor::from_data([0], device))
             .unsqueeze_dim(1); // DIVERGENCE: differ from the original python code 
         
-        let target = 
+        let target = data_batch.reward + GAMMA * target_network_output * data_batch.done;
+        
+        // This is also known as `smooth L1 loss` in PyTorch. 
+        // The 1.0 delta value originates from PyTorch default.
+        let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
+        let loss = huber_loss.forward_no_reduction(q_net_output_to_action, target);
+
+        // Calculate gradients and then convert them to parameters
+        let gradients = loss.backward();
+        let gradients_params = GradientsParams::from_grads(gradients, &q_net_optimized);
+        
+        q_net_optimized = optimizer.step(LEARNING_RATE, q_net_optimized, gradients_params);
     }
+    
+    q_net_optimized
+}
+
+/// The main training loop
+pub fn run_session() -> Result<()> {
+    let mut env = CartPoleEnv::new(RenderMode::Human);
+
+    let device = NdArrayDevice::default();
+    let mut q_net = QNet::new(&device);
+    let mut q_target_net = QNet::new(&device);
+    let mut memory = ReplayBuffer::new();
+    let mut optimizer = AdamConfig::new().init();
+
+    let mut score: f32 = 0.0;
+    let print_interval: usize = 20;
+
+    for n_epi in 0..10000 {
+        let epsilon = f32::max(0.01, 0.08 - 0.01 * ( n_epi as f32 / 200.0));
+        let (mut raw_state, _) = env.reset(None, false, None);
+        let mut done: bool = false;
+        
+        while !done {
+            let action = q_net.sample_action(raw_state, epsilon);
+            let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+            
+            done = result.done;
+            memory.put(
+                Data { state: result.state, action: result.action, reward: result.award / 100.0, next_state: result.observation, done: result.done }
+            );
+            raw_state = result.observation;
+            
+            score += result.reward;
+            
+            if done {
+                break;
+            }
+        }
+        
+        if memory.size() > 2000 {
+            q_net = train(q_net, q_target_net, &mut memory, &mut optimizer, &device);
+        }
+        
+        if (n_epi % print_interval == 0) && (n_epi != 0) {
+            println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
+            score = 0.0;
+        }
+    }
+
+    env.close();
+
+    Ok(())
 }
