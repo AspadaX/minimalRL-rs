@@ -167,8 +167,9 @@ where
             return rand::random_range(0..=1);
         }
         
-        dbg!(&output);
-        let argmax_tensor: Tensor<B, 1, Int> = output.argmax(1);
+        // the 0-dim is the correct input, 
+        // which will result in the same argmax tensor as the Python one
+        let argmax_tensor: Tensor<B, 1, Int> = output.argmax(0);
         
         argmax_tensor.into_scalar().to_usize()
     }
@@ -187,10 +188,13 @@ pub fn train<O: SimpleOptimizer<B::InnerBackend>, B: AutodiffBackend>(
         
         let q_net_output: Tensor<B, 2> = q_net_optimized.forward(data_batch.state);
         let q_net_output_to_action: Tensor<B, 2> = q_net_output.gather(1, data_batch.action);
+        // This might differ from the original Python approach, but I am not sure.
+        // I experimented with it, and I found the below code has the same shape as the one in Python. 
+        // In Python, the below variable is named as `max_q_prime`.
         let target_network_output: Tensor<B, 2> = target_network.forward(data_batch.next_state)
-            .max_dim(1)
-            .select(0, Tensor::from_data([0], device))
-            .unsqueeze_dim(1); // DIVERGENCE: differ from the original python code 
+            .max_dim(1);
+            // .select(0, Tensor::from_data([0], device))
+            // .unsqueeze_dim(1); // DIVERGENCE: differ from the original python code 
         
         let target: Tensor<B, 2> = data_batch.reward + GAMMA * target_network_output * data_batch.done;
         
