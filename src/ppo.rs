@@ -1,5 +1,4 @@
 use anyhow::Result;
-use burn::backend::autodiff::checkpoint::state;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
 use burn::module::Module;
