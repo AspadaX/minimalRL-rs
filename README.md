@@ -6,9 +6,16 @@ Hopefully, this repo can inspire more people to use Rust in the AI field.
 
 ## Progress
 
-I implemented PPO. Other implementations are on the way. 
+- [X] Merged DQN into the main branch on Aug 25th, 2025
+
+Other implementations are on the way. 
 
 I am still exploring reinforcement learning. If you would like to add other algorithms, please feel free to make a PR! 
+
+## Implemented Algorithm
+
+- PPO
+- DQN
 
 ## How to get the most of this repo? 
 
