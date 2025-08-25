@@ -12,6 +12,19 @@ Other implementations are on the way.
 
 I am still exploring reinforcement learning. If you would like to add other algorithms, please feel free to make a PR! 
 
+## How to use
+
+You need to have Rust installed on your system first. Refer [Rust official website](https://www.rust-lang.org/tools/install) for installation details. 
+
+Clone this repository:
+```bash
+git clone https://github.com/AspadaX/minimalRL-rs
+```
+
+Switch to the repository folder, use `cargo run --release` to run it in release mode. 
+
+Follow the guide there to run an algorithm you want. 
+
 ## Implemented Algorithm
 
 - PPO
