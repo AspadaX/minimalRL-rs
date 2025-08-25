@@ -6,9 +6,6 @@ mod ppo;
 mod dqn;
 
 fn main() -> Result<()> {
-    dqn::run_session()?;
-    return Ok(());
-    
     println!("Please choose an algorithm to run (ppo, dqn): ");
     let mut input: String = String::new();
     let buffer: Stdin = stdin();
