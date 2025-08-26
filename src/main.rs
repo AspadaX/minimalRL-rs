@@ -4,6 +4,7 @@ use anyhow::Result;
 
 mod ppo;
 mod dqn;
+mod a2c;
 
 fn main() -> Result<()> {
     println!("Please choose an algorithm to run (ppo, dqn): ");
