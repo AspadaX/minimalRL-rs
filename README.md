@@ -25,6 +25,12 @@ Switch to the repository folder, use `cargo run --release` to run it in release 
 
 Follow the guide there to run an algorithm you want. 
 
+### Notice
+
+The dependency `gym` used by this project works well on Linux systems. It does not work well on macOS, and I didn't test it on a Windows device. For your convenience, you may run the project in a Linux environment. 
+
+In case if you find a way to make `gym` work on macOS, please make a PR or issue to let us know. 
+
 ## Implemented Algorithm
 
 - PPO
