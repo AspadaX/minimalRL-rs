@@ -20,6 +20,8 @@ use gym_rs::{
 };
 use rand::{Rng, distr::weighted::WeightedIndex, rng};
 
+use crate::utilities::sample_action;
+
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
 const GAMMA: f32 = 0.98;
@@ -312,14 +314,7 @@ pub fn run_session() -> Result<()> {
                 // Feed the state to the policy network
                 let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
 
-                let probability_vector: Vec<f32> = probability
-                    .to_data()
-                    .convert::<f32>()
-                    .to_vec::<f32>()
-                    .unwrap();
-                let distributions: WeightedIndex<f32> = WeightedIndex::new(&probability_vector)?;
-                let mut thread_rng: rand::prelude::ThreadRng = rng();
-                let action: usize = thread_rng.sample(distributions);
+                let action: usize = sample_action(probability)?;
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
                 // Now, this turn's observation has become the next turn's previous observation

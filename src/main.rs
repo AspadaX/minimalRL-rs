@@ -2,6 +2,7 @@ use std::io::{stdin, Stdin};
 
 use anyhow::Result;
 
+mod utilities;
 mod ppo;
 mod dqn;
 mod a2c;
