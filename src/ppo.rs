@@ -18,7 +18,6 @@ use gym_rs::{
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
     utils::renderer::RenderMode,
 };
-use rand::{Rng, distr::weighted::WeightedIndex, rng};
 
 use crate::utilities::sample_action;
 
@@ -319,7 +318,7 @@ pub fn run_session() -> Result<()> {
                     .to_vec::<f32>()
                     .unwrap();
 
-                let action: usize = sample_action(probability_vector)?;
+                let action: usize = sample_action(&probability_vector)?;
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
                 // Now, this turn's observation has become the next turn's previous observation

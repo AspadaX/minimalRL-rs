@@ -1,10 +1,11 @@
 use anyhow::Result;
-use burn::{backend::ndarray::NdArrayDevice, module::Module, nn::{Linear, LinearConfig, Relu}, optim::{decay::WeightDecayConfig, AdamConfig}, prelude::Backend, tensor::{activation::softmax, Tensor}};
+use burn::{backend::ndarray::NdArrayDevice, module::Module, nn::{Linear, LinearConfig, Relu}, optim::{decay::WeightDecayConfig, AdamConfig}, prelude::Backend, tensor::{activation::softmax, cast::ToElement, Tensor}};
 use gym_rs::{
     core::{ActionReward, Env},
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
     utils::renderer::RenderMode,
 };
+use rand::{rng, Rng};
 
 use crate::utilities::sample_action;
 
@@ -55,7 +56,7 @@ where
     }
 }
 
-pub fn compute_temporarl_difference_target(
+pub fn compute_temporarl_difference_target<B: Backend>(
     value_function_result: Tensor<B, 1>, 
     rewards: [[f32; 1]; UPDATE_INTERVAL], 
     dones: [[usize; 1]; UPDATE_INTERVAL]
@@ -78,7 +79,12 @@ pub fn run_session() -> Result<()> {
     
     let score: f32 = 0.0;
     
-    let state = env.reset();
+    let (state, _) = env.reset(Some(rng().random()), false, None);
+    let mut array_state: [f32; 4] = [0.0; 4];
+    for (index, element) in Vec::from(state).iter().enumerate() {
+        array_state[index] = element;
+    }
+            
     for n_epi in 0..MAX_TRAIN_STEPS {
         let mut states: [[f32; 4]; UPDATE_INTERVAL] = [[0.0; 4]; UPDATE_INTERVAL];
         let mut actions: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
@@ -86,9 +92,9 @@ pub fn run_session() -> Result<()> {
         let mut dones: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         
         for index in 0..UPDATE_INTERVAL {
-            let probability = model.use_policy_function(state, None);
+            let probability = model.use_policy_function(Tensor::from(array_state), None);
             let action = sample_action(
-                probability
+                &probability
                     .to_data()
                     .convert::<f32>()
                     .to_vec::<f32>()
@@ -96,20 +102,25 @@ pub fn run_session() -> Result<()> {
             )?;
             
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
-            
-            states[index] = state;
+
+            states[index] = array_state;
             actions[index] = [action];
-            rewards[index] = result.reward / 100.0;
-            dones[index] = 1 - result.done;
+            rewards[index] = [result.reward.to_f32() / 100.0];
+
+            if result.done {
+                dones[index] = [1];
+            } else {
+                dones[index] = [0];
+            }
             
             // Record the state we get from this turn
             state = result.observation;
         }
         
-        let value_function_result = model.use_value_function(state);
+        let value_function_result = model.use_value_function(Tensor::from(array_state));
         
         if (n_epi % PRINT_INTERVAL == 0) && (n_epi != 0) {
-            println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
+            println!("# of episode :{}, avg score : {}", n_epi, score / PRINT_INTERVAL as f32);
             score = 0.0;
         }
     }
