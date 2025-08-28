@@ -1,5 +1,5 @@
 use anyhow::Result;
-use burn::{backend::ndarray::NdArrayDevice, module::Module, nn::{Linear, LinearConfig, Relu}, optim::{decay::WeightDecayConfig, AdamConfig}, prelude::Backend, tensor::{activation::softmax, cast::ToElement, Tensor}};
+use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig}, prelude::Backend, serde::de::value, tensor::{activation::softmax, cast::ToElement, Tensor, TensorData}};
 use gym_rs::{
     core::{ActionReward, Env},
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
@@ -59,9 +59,24 @@ where
 pub fn compute_temporarl_difference_target<B: Backend>(
     value_function_result: Tensor<B, 1>, 
     rewards: [[f32; 1]; UPDATE_INTERVAL], 
-    dones: [[usize; 1]; UPDATE_INTERVAL]
+    dones: [[usize; 1]; UPDATE_INTERVAL],
+    device: &B::Device
 ) -> Tensor<B, 1> {
-    
+    let mut temporal_difference_target = Vec::new();
+
+    let value_function_result_scalar = value_function_result.to_data().convert::<f32>().to_vec::<f32>().unwrap()[0];
+    let reversed_rewards = rewards.iter().rev();
+    let reversed_dones = dones.iter().rev();
+
+    for (index, (reward, done)) in reversed_rewards.zip(reversed_dones).enumerate() {
+        let discounted_cumulative_reward = reward[0] + GAMMA * value_function_result_scalar * done[0] as f32;
+        temporal_difference_target.push(discounted_cumulative_reward);
+    }
+
+    Tensor::from_data(
+        TensorData::new(temporal_difference_target, [UPDATE_INTERVAL]), 
+        device
+    )
 }
 
 pub fn run_session() -> Result<()> {
@@ -69,20 +84,20 @@ pub fn run_session() -> Result<()> {
 
     let device: NdArrayDevice = NdArrayDevice::default();
     // Initialize the neural networks
-    let model = ActorCritic::new(&device);
-    let optimizer = AdamConfig::new()
+    let mut model: ActorCritic<Autodiff<NdArray>> = ActorCritic::new(&device);
+    let mut optimizer: OptimizerAdaptor<Adam, ActorCritic<Autodiff<NdArray>>, Autodiff<NdArray>> = AdamConfig::new()
         .with_beta_1(0.9)
         .with_beta_2(0.999)
         .with_epsilon(1e-08)
         .with_weight_decay(Some(WeightDecayConfig::new(0.0)))
         .init();
     
-    let score: f32 = 0.0;
+    let mut score: f32 = 0.0;
     
-    let (state, _) = env.reset(Some(rng().random()), false, None);
+    let (mut state, _) = env.reset(Some(rng().random()), false, None);
     let mut array_state: [f32; 4] = [0.0; 4];
     for (index, element) in Vec::from(state).iter().enumerate() {
-        array_state[index] = element;
+        array_state[index] = element.to_owned().to_f32();
     }
             
     for n_epi in 0..MAX_TRAIN_STEPS {
