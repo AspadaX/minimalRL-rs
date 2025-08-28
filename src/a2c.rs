@@ -39,7 +39,7 @@ where
         }
     }
     
-    pub fn update_policy(&mut self, x: Tensor<B, 1>, softmax_dimension: Option<usize>) -> Tensor<B, 1> {
+    pub fn use_policy_function(&mut self, x: Tensor<B, 1>, softmax_dimension: Option<usize>) -> Tensor<B, 1> {
         let relu = Relu::new();
         let x = relu.forward(self.fully_connected_layer.forward(x));
         let x = self.policy_fully_connected_layer.forward(x);
@@ -47,12 +47,20 @@ where
         softmax(x, softmax_dimension.unwrap_or(1))
     }
     
-    pub fn update_value_function(&mut self, x: Tensor<B, 1>) -> Tensor<B, 1> {
+    pub fn use_value_function(&mut self, x: Tensor<B, 1>) -> Tensor<B, 1> {
         let relu = Relu::new();
         let x = relu.forward(self.fully_connected_layer.forward(x));
         
         self.value_function_fully_connected_layer.forward(x)
     }
+}
+
+pub fn compute_temporarl_difference_target(
+    value_function_result: Tensor<B, 1>, 
+    rewards: [[f32; 1]; UPDATE_INTERVAL], 
+    dones: [[usize; 1]; UPDATE_INTERVAL]
+) -> Tensor<B, 1> {
+    
 }
 
 pub fn run_session() -> Result<()> {
@@ -72,29 +80,33 @@ pub fn run_session() -> Result<()> {
     
     let state = env.reset();
     for n_epi in 0..MAX_TRAIN_STEPS {
-        // s_lst, a_lst, r_lst, mask_lst = list(), list(), list(), list()
-        // for _ in range(update_interval):
-        //     prob = model.pi(torch.from_numpy(s).float())
-        //     a = Categorical(prob).sample().numpy()
-        //     s_prime, r, done, info = envs.step(a)
-    
-        //     s_lst.append(s)
-        //     a_lst.append(a)
-        //     r_lst.append(r/100.0)
-        //     mask_lst.append(1 - done)
-    
-        //     s = s_prime
-        //     step_idx += 1
         let mut states: [[f32; 4]; UPDATE_INTERVAL] = [[0.0; 4]; UPDATE_INTERVAL];
-        let mut actions: [[u8; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
+        let mut actions: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         let mut rewards: [[f32; 1]; UPDATE_INTERVAL] = [[0.0; 1]; UPDATE_INTERVAL];
-        let mut next_states: [[f32; 4]; UPDATE_INTERVAL] = [[0.0; 4]; UPDATE_INTERVAL];
-        let mut dones: [[u8; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
+        let mut dones: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         
-        for _ in 0..UPDATE_INTERVAL {
-            let probability = model.update_policy(state, None);
-            let action = sample_action(probability)?;
+        for index in 0..UPDATE_INTERVAL {
+            let probability = model.use_policy_function(state, None);
+            let action = sample_action(
+                probability
+                    .to_data()
+                    .convert::<f32>()
+                    .to_vec::<f32>()
+                    .unwrap()
+            )?;
+            
+            let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+            
+            states[index] = state;
+            actions[index] = [action];
+            rewards[index] = result.reward / 100.0;
+            dones[index] = 1 - result.done;
+            
+            // Record the state we get from this turn
+            state = result.observation;
         }
+        
+        let value_function_result = model.use_value_function(state);
         
         if (n_epi % PRINT_INTERVAL == 0) && (n_epi != 0) {
             println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);

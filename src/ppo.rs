@@ -313,8 +313,13 @@ pub fn run_session() -> Result<()> {
                 let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
                 // Feed the state to the policy network
                 let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
+                let probability_vector: Vec<f32> = probability
+                    .to_data()
+                    .convert::<f32>()
+                    .to_vec::<f32>()
+                    .unwrap();
 
-                let action: usize = sample_action(probability)?;
+                let action: usize = sample_action(probability_vector)?;
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
                 // Now, this turn's observation has become the next turn's previous observation
