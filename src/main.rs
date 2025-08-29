@@ -25,6 +25,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
     
+    if input.trim() == "a2c".to_string() {
+        a2c::run_session()?;
+        return Ok(());
+    }
+    
     println!("{} is not implemented! Pleaes input an implemented algorithm to begin with.", input);
     Ok(())
 }
