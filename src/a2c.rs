@@ -1,5 +1,5 @@
 use anyhow::Result;
-use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig}, prelude::Backend, serde::de::value, tensor::{activation::softmax, cast::ToElement, Tensor, TensorData}};
+use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig, GradientsParams, Optimizer}, prelude::Backend, serde::de::value, tensor::{activation::softmax, cast::ToElement, Tensor, TensorData}};
 use gym_rs::{
     core::{ActionReward, Env},
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
@@ -40,6 +40,7 @@ where
         }
     }
     
+    /// softmax dimension is default to 1
     pub fn use_policy_function(&mut self, x: Tensor<B, 1>, softmax_dimension: Option<usize>) -> Tensor<B, 1> {
         let relu = Relu::new();
         let x = relu.forward(self.fully_connected_layer.forward(x));
@@ -48,7 +49,7 @@ where
         softmax(x, softmax_dimension.unwrap_or(1))
     }
     
-    pub fn use_value_function(&mut self, x: Tensor<B, 1>) -> Tensor<B, 1> {
+    pub fn use_value_function<const D: usize>(&mut self, x: Tensor<B, D>) -> Tensor<B, D> {
         let relu = Relu::new();
         let x = relu.forward(self.fully_connected_layer.forward(x));
         
@@ -68,7 +69,7 @@ pub fn compute_temporarl_difference_target<B: Backend>(
     let reversed_rewards = rewards.iter().rev();
     let reversed_dones = dones.iter().rev();
 
-    for (index, (reward, done)) in reversed_rewards.zip(reversed_dones).enumerate() {
+    for (reward, done) in reversed_rewards.zip(reversed_dones) {
         let discounted_cumulative_reward = reward[0] + GAMMA * value_function_result_scalar * done[0] as f32;
         temporal_difference_target.push(discounted_cumulative_reward);
     }
@@ -102,7 +103,7 @@ pub fn run_session() -> Result<()> {
             
     for n_epi in 0..MAX_TRAIN_STEPS {
         let mut states: [[f32; 4]; UPDATE_INTERVAL] = [[0.0; 4]; UPDATE_INTERVAL];
-        let mut actions: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
+        let mut actions: [[u32; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         let mut rewards: [[f32; 1]; UPDATE_INTERVAL] = [[0.0; 1]; UPDATE_INTERVAL];
         let mut dones: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         
@@ -119,7 +120,7 @@ pub fn run_session() -> Result<()> {
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
 
             states[index] = array_state;
-            actions[index] = [action];
+            actions[index] = [action as u32];
             rewards[index] = [result.reward.to_f32() / 100.0];
 
             if result.done {
@@ -133,6 +134,29 @@ pub fn run_session() -> Result<()> {
         }
         
         let value_function_result = model.use_value_function(Tensor::from(array_state));
+        let temporal_difference_target = compute_temporarl_difference_target(value_function_result, rewards, dones, &device);
+        
+        let states_tensor = Tensor::from(states);
+        let actions_tensor = Tensor::from(actions);
+        
+        let value_function_results = model.use_value_function(states_tensor.clone());
+        let advantage = temporal_difference_target.clone() - value_function_results.clone();
+        
+        let policy_function_result = model.use_policy_function(states_tensor, None);
+        let policy_action = policy_function_result.gather(1, actions_tensor);
+        
+        // This is also known as `smooth L1 loss` in PyTorch. 
+        // The 1.0 delta value originates from PyTorch default.
+        let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
+        let loss = -(policy_action.log() * advantage.clone()).mean() + huber_loss
+            .forward_no_reduction(value_function_results.clone(), temporal_difference_target);
+        
+        let gradients = loss.backward();
+        model = optimizer.step(
+            LEARNING_RATE as f64, 
+            model.clone(), 
+            GradientsParams::from_grads(gradients, &model)
+        );
         
         if (n_epi % PRINT_INTERVAL == 0) && (n_epi != 0) {
             println!("# of episode :{}, avg score : {}", n_epi, score / PRINT_INTERVAL as f32);
