@@ -293,7 +293,7 @@ where
 
 /// The main training loop
 pub fn run_session() -> Result<()> {
-    let mut env = CartPoleEnv::new(RenderMode::Human);
+    let mut env = CartPoleEnv::new(RenderMode::None);
 
     let device = NdArrayDevice::default();
     let mut model: PPO<Autodiff<NdArray>> = PPO::new(device);

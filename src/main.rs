@@ -8,7 +8,7 @@ mod dqn;
 mod a2c;
 
 fn main() -> Result<()> {
-    println!("Please choose an algorithm to run (ppo, dqn): ");
+    println!("Please choose an algorithm to run (ppo, dqn, a2c): ");
     let mut input: String = String::new();
     let buffer: Stdin = stdin();
     buffer.read_line(&mut input)?;
