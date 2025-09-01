@@ -11,6 +11,9 @@ use crate::utilities::sample_action;
 
 
 // Hyperparameters
+// 
+// Note that the original Python implementation uses multiprocessing, while
+// the Rust implementation uses single process for simplicity. 
 const LEARNING_RATE: f32 = 0.0002;
 const UPDATE_INTERVAL: usize = 5;
 const GAMMA: f32 = 0.98;
@@ -22,6 +25,7 @@ pub struct ActorCritic<B: Backend> {
     fully_connected_layer: Linear<B>,
     policy_fully_connected_layer: Linear<B>,
     value_function_fully_connected_layer: Linear<B>,
+    relu: Relu
 }
 
 impl<B> ActorCritic<B> 
@@ -29,28 +33,24 @@ where
     B: Backend
 {
     pub fn new(device: &B::Device) -> Self {
-        // self.fc1 = nn.Linear(4, 256)
-        // self.fc_pi = nn.Linear(256, 2)
-        // self.fc_v = nn.Linear(256, 1)
         Self {
             fully_connected_layer: LinearConfig::new(4, 256).init(device), 
             policy_fully_connected_layer: LinearConfig::new(256, 2).init(device), 
-            value_function_fully_connected_layer: LinearConfig::new(256, 1).init(device) 
+            value_function_fully_connected_layer: LinearConfig::new(256, 1).init(device),
+            relu: Relu::new()
         }
     }
     
     /// softmax dimension is default to 1
     pub fn use_policy_function<const D: usize>(&self, x: Tensor<B, D>, softmax_dimension: Option<usize>) -> Tensor<B, D> {
-        let relu = Relu::new();
-        let x = relu.forward(self.fully_connected_layer.forward(x));
-        let x = self.policy_fully_connected_layer.forward(x);
+        let x: Tensor<B, D> = self.relu.forward(self.fully_connected_layer.forward(x));
+        let x: Tensor<B, D> = self.policy_fully_connected_layer.forward(x);
         
         softmax(x, softmax_dimension.unwrap_or(1))
     }
     
     pub fn use_value_function<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
-        let relu = Relu::new();
-        let x = relu.forward(self.fully_connected_layer.forward(x));
+        let x: Tensor<B, D> = self.relu.forward(self.fully_connected_layer.forward(x));
         
         self.value_function_fully_connected_layer.forward(x)
     }
@@ -62,15 +62,15 @@ pub fn compute_temporarl_difference_target<B: Backend, const D: usize>(
     dones: [[usize; 1]; UPDATE_INTERVAL],
     device: &B::Device
 ) -> Tensor<B, 1> {
-    let mut temporal_difference_target = Vec::new();
+    let mut temporal_difference_target: Vec<f32> = Vec::new();
 
-    let value_function_result_scalar = value_function_result.to_data().convert::<f32>().to_vec::<f32>().unwrap()[0];
+    let value_function_result_scalar: f32 = value_function_result.to_data().convert::<f32>().to_vec::<f32>().unwrap()[0];
     let reversed_rewards = rewards.iter().rev();
     let reversed_dones = dones.iter().rev();
 
     for (index, (reward, _)) in reversed_rewards.zip(reversed_dones).enumerate() {
-        let done = 1.0 - dones[index][0] as f32;
-        let discounted_cumulative_reward = reward[0] + GAMMA * value_function_result_scalar * done;
+        let done: f32 = 1.0 - dones[index][0] as f32;
+        let discounted_cumulative_reward: f32 = reward[0] + GAMMA * value_function_result_scalar * done;
         temporal_difference_target.push(discounted_cumulative_reward);
     }
 
@@ -84,15 +84,15 @@ pub fn compute_temporarl_difference_target<B: Backend, const D: usize>(
 pub fn test<B: Backend>(step_idx: usize, model: &ActorCritic<B>) -> Result<()> {
     let mut env: CartPoleEnv = CartPoleEnv::new(RenderMode::None);
     let mut score: f32 = 0.0;
-    let mut done = false;
+    let mut done: bool = false;
     let number_test: usize = 10;
 
     for _ in 0..number_test {
         let (mut state, _) = env.reset(Some(rng().random()), false, None);
         while !done {
-            let array_state = convert_to_array(state);
-            let probability = model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
-            let action = sample_action(
+            let array_state: [f32; 4] = convert_to_array(state);
+            let probability: Tensor<B, 1> = model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
+            let action: usize = sample_action(
                 &probability
                     .to_data()
                     .convert::<f32>()
@@ -148,8 +148,8 @@ pub fn run_session() -> Result<()> {
         let mut dones: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
         
         for index in 0..UPDATE_INTERVAL {
-            let probability = model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
-            let action = sample_action(
+            let probability: Tensor<Autodiff<NdArray>, 1> = model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
+            let action: usize = sample_action(
                 &probability
                     .to_data()
                     .convert::<f32>()
@@ -179,16 +179,16 @@ pub fn run_session() -> Result<()> {
         let states_tensor: Tensor<Autodiff<NdArray>, 2> = Tensor::from(states);
         let actions_tensor: Tensor<Autodiff<NdArray>, 2, Int> = Tensor::from(actions);
         
-        let value_function_results = model.use_value_function(states_tensor.clone()).reshape([-1]);
-        let advantage = temporal_difference_target.clone() - value_function_results.clone();
+        let value_function_results: Tensor<Autodiff<NdArray>, 1> = model.use_value_function(states_tensor.clone()).reshape([-1]);
+        let advantage: Tensor<Autodiff<NdArray>, 1> = temporal_difference_target.clone() - value_function_results.clone();
         
-        let policy_function_result = model.use_policy_function(states_tensor, None);
-        let policy_action = policy_function_result.gather(1, actions_tensor).reshape([-1]);
+        let policy_function_result: Tensor<Autodiff<NdArray>, 2> = model.use_policy_function(states_tensor, None);
+        let policy_action: Tensor<Autodiff<NdArray>, 1> = policy_function_result.gather(1, actions_tensor).reshape([-1]);
         
         // This is also known as `smooth L1 loss` in PyTorch. 
         // The 1.0 delta value originates from PyTorch default.
         let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
-        let loss = -(policy_action.log() * advantage.clone()).mean() + huber_loss
+        let loss: Tensor<Autodiff<NdArray>, 1> = -(policy_action.log() * advantage.clone()).mean() + huber_loss
             .forward_no_reduction(value_function_results.clone(), temporal_difference_target);
         
         let gradients = loss.backward();

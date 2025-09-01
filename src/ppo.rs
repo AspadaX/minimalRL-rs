@@ -108,6 +108,7 @@ where
     module: PPOModule<T>,
     optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T>,
     device: T::Device,
+    relu: Relu
 }
 
 impl<T> PPO<T>
@@ -145,6 +146,7 @@ where
             optimizer,
             data: vec![],
             device,
+            relu: Relu::new()
         }
     }
 
@@ -217,10 +219,8 @@ where
             softmax_dimension = dim;
         }
 
-        let relu: Relu = Relu::new();
-
         let x: Tensor<T, X> = self.module.fc1.forward(x);
-        let x: Tensor<T, X> = relu.forward(x);
+        let x: Tensor<T, X> = self.relu.forward(x);
         let x: Tensor<T, X> = self.module.fc_pi.forward(x);
 
         // Return the probability
@@ -228,10 +228,8 @@ where
     }
 
     pub fn v(&mut self, x: Tensor<T, 2>) -> Tensor<T, 2> {
-        let relu: Relu = Relu::new();
-
         let x: Tensor<T, 2> = self.module.fc1.forward(x);
-        let x: Tensor<T, 2> = relu.forward(x);
+        let x: Tensor<T, 2> = self.relu.forward(x);
 
         self.module.fc_v.forward(x)
     }

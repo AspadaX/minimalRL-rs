@@ -136,6 +136,7 @@ pub struct QNet<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
     fc3: Linear<B>,
+    relu: Relu,
 }
 
 impl<B> QNet<B> 
@@ -147,13 +148,13 @@ where
             fc1: LinearConfig::new(4, 128).init(device), 
             fc2: LinearConfig::new(128, 128).init(device), 
             fc3: LinearConfig::new(128, 2).init(device),
+            relu: Relu::new(),
         }
     }
     
     pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
-        let relu: Relu = Relu::new();
-        let x: Tensor<B, D> = relu.forward(self.fc1.forward(x));
-        let x: Tensor<B, D> = relu.forward(self.fc2.forward(x));
+        let x: Tensor<B, D> = self.relu.forward(self.fc1.forward(x));
+        let x: Tensor<B, D> = self.relu.forward(self.fc2.forward(x));
         
         self.fc3.forward(x)
     }

@@ -6,6 +6,7 @@ Hopefully, this repo can inspire more people to use Rust in the AI field.
 
 ## Progress
 
+- [X] Merged A2C into the main branch on Sep 1st, 2025
 - [X] Merged DQN into the main branch on Aug 25th, 2025
 
 Other implementations are on the way. 
@@ -35,6 +36,7 @@ In case if you find a way to make `gym` work on macOS, please make a PR or issue
 
 - PPO
 - DQN
+- A2C
 
 ## How to get the most of this repo? 
 
