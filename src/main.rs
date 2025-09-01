@@ -26,7 +26,7 @@ fn main() -> Result<()> {
     }
     
     if input.trim() == "ac".to_string() {
-        a2c::run_session()?;
+        ac::run_session()?;
         return Ok(());
     }
     
