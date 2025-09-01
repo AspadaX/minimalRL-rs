@@ -11,9 +11,6 @@ use crate::utilities::sample_action;
 
 
 // Hyperparameters
-// 
-// Note that the original Python implementation uses multiprocessing, while
-// the Rust implementation uses single process for simplicity. 
 const LEARNING_RATE: f32 = 0.0002;
 const UPDATE_INTERVAL: usize = 5;
 const GAMMA: f32 = 0.98;

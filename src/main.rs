@@ -5,10 +5,10 @@ use anyhow::Result;
 mod utilities;
 mod ppo;
 mod dqn;
-mod a2c;
+mod ac;
 
 fn main() -> Result<()> {
-    println!("Please choose an algorithm to run (ppo, dqn, a2c): ");
+    println!("Please choose an algorithm to run (ppo, dqn, ac): ");
     let mut input: String = String::new();
     let buffer: Stdin = stdin();
     buffer.read_line(&mut input)?;
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     
-    if input.trim() == "a2c".to_string() {
+    if input.trim() == "ac".to_string() {
         a2c::run_session()?;
         return Ok(());
     }
