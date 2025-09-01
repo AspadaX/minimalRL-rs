@@ -18,7 +18,8 @@ use gym_rs::{
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
     utils::renderer::RenderMode,
 };
-use rand::{Rng, distr::weighted::WeightedIndex, rng};
+
+use crate::utilities::sample_action;
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
@@ -107,6 +108,7 @@ where
     module: PPOModule<T>,
     optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T>,
     device: T::Device,
+    relu: Relu
 }
 
 impl<T> PPO<T>
@@ -144,6 +146,7 @@ where
             optimizer,
             data: vec![],
             device,
+            relu: Relu::new()
         }
     }
 
@@ -216,10 +219,8 @@ where
             softmax_dimension = dim;
         }
 
-        let relu: Relu = Relu::new();
-
         let x: Tensor<T, X> = self.module.fc1.forward(x);
-        let x: Tensor<T, X> = relu.forward(x);
+        let x: Tensor<T, X> = self.relu.forward(x);
         let x: Tensor<T, X> = self.module.fc_pi.forward(x);
 
         // Return the probability
@@ -227,10 +228,8 @@ where
     }
 
     pub fn v(&mut self, x: Tensor<T, 2>) -> Tensor<T, 2> {
-        let relu: Relu = Relu::new();
-
         let x: Tensor<T, 2> = self.module.fc1.forward(x);
-        let x: Tensor<T, 2> = relu.forward(x);
+        let x: Tensor<T, 2> = self.relu.forward(x);
 
         self.module.fc_v.forward(x)
     }
@@ -292,7 +291,7 @@ where
 
 /// The main training loop
 pub fn run_session() -> Result<()> {
-    let mut env = CartPoleEnv::new(RenderMode::Human);
+    let mut env = CartPoleEnv::new(RenderMode::None);
 
     let device = NdArrayDevice::default();
     let mut model: PPO<Autodiff<NdArray>> = PPO::new(device);
@@ -311,15 +310,13 @@ pub fn run_session() -> Result<()> {
                 let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
                 // Feed the state to the policy network
                 let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
-
                 let probability_vector: Vec<f32> = probability
                     .to_data()
                     .convert::<f32>()
                     .to_vec::<f32>()
                     .unwrap();
-                let distributions: WeightedIndex<f32> = WeightedIndex::new(&probability_vector)?;
-                let mut thread_rng: rand::prelude::ThreadRng = rng();
-                let action: usize = thread_rng.sample(distributions);
+
+                let action: usize = sample_action(&probability_vector)?;
 
                 let result: ActionReward<CartPoleObservation, ()> = env.step(action);
                 // Now, this turn's observation has become the next turn's previous observation

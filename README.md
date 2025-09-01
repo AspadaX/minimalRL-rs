@@ -6,6 +6,7 @@ Hopefully, this repo can inspire more people to use Rust in the AI field.
 
 ## Progress
 
+- [X] Merged A2C into the main branch on Sep 1st, 2025
 - [X] Merged DQN into the main branch on Aug 25th, 2025
 
 Other implementations are on the way. 
@@ -25,10 +26,17 @@ Switch to the repository folder, use `cargo run --release` to run it in release 
 
 Follow the guide there to run an algorithm you want. 
 
+### Notice
+
+The dependency `gym` used by this project works well on Linux systems. It does not work well on macOS, and I didn't test it on a Windows device. For your convenience, you may run the project in a Linux environment. 
+
+In case if you find a way to make `gym` work on macOS, please make a PR or issue to let us know. 
+
 ## Implemented Algorithm
 
 - PPO
 - DQN
+- A2C
 
 ## How to get the most of this repo? 
 

@@ -2,11 +2,13 @@ use std::io::{stdin, Stdin};
 
 use anyhow::Result;
 
+mod utilities;
 mod ppo;
 mod dqn;
+mod a2c;
 
 fn main() -> Result<()> {
-    println!("Please choose an algorithm to run (ppo, dqn): ");
+    println!("Please choose an algorithm to run (ppo, dqn, a2c): ");
     let mut input: String = String::new();
     let buffer: Stdin = stdin();
     buffer.read_line(&mut input)?;
@@ -20,6 +22,11 @@ fn main() -> Result<()> {
     
     if input.trim() == "dqn".to_string() {
         dqn::run_session()?;
+        return Ok(());
+    }
+    
+    if input.trim() == "a2c".to_string() {
+        a2c::run_session()?;
         return Ok(());
     }
     
