@@ -19,7 +19,7 @@ use gym_rs::{
     utils::renderer::RenderMode,
 };
 
-use crate::utilities::sample_action;
+use crate::shared::utilities::sample_action;
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;

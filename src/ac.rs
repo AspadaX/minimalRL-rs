@@ -7,7 +7,7 @@ use gym_rs::{
 };
 use rand::{rng, Rng};
 
-use crate::utilities::sample_action;
+use crate::shared::utilities::sample_action;
 
 
 // Hyperparameters
