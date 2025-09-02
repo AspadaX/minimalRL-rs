@@ -1,3 +1,10 @@
+use burn::{prelude::Backend, tensor::{cast::ToElement, Int, Tensor}};
+use gym_rs::{core::ActionReward, envs::classical_control::cartpole::CartPoleObservation};
+
+/// What's included in the data
+///
+/// The difference is that the Python version does not need to know the data size at "compile time",
+/// but Rust does.
 #[derive(Debug, Clone)]
 pub struct Data {
     pub state: [f32; 4], // Current state, correspond to `s` in the original Python code. Below are the same.
@@ -35,4 +42,20 @@ impl Data {
             done: step.done,
         }
     }
+}
+
+/// A batch of data
+///
+/// Tensor<B, 2> reads: a tensor of two dimensions
+#[derive(Debug, Clone)]
+pub struct DataBatch<B>
+where
+    B: Backend,
+{
+    pub states: Tensor<B, 2>,
+    pub actions: Tensor<B, 2, Int>,
+    pub rewards: Tensor<B, 2>,
+    pub next_states: Tensor<B, 2>,
+    pub action_probabilities: Tensor<B, 2>,
+    pub dones: Tensor<B, 2>,
 }

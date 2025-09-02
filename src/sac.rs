@@ -1,8 +1,5 @@
+use burn::prelude::Backend;
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 
-pub struct DataBatch {}
+use crate::shared::data_structs::DataBatch;
 
-#[derive(Debug, Clone)]
-pub struct ReplayBuffer {
-    experiences: Vec<DataBatch>
-}
