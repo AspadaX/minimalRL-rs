@@ -2,10 +2,11 @@ use std::io::{stdin, Stdin};
 
 use anyhow::Result;
 
-mod utilities;
+mod shared;
 mod ppo;
 mod dqn;
 mod ac;
+mod sac;
 
 fn main() -> Result<()> {
     println!("Please choose an algorithm to run (ppo, dqn, ac): ");

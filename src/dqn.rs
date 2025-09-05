@@ -21,115 +21,14 @@ use gym_rs::{
     envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation},
     utils::renderer::RenderMode,
 };
-use rand::rng;
-use rand::seq::IteratorRandom;
+
+use crate::shared::data_structs::{Data, DataBatch};
+use crate::shared::replay_buffer::ReplayBuffer;
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
 const GAMMA: f32 = 0.98;
-const BUFFER_LIMIT: usize = 50000;
 const BATCH_SIZE: usize = 32;
-
-#[derive(Debug, Clone)]
-struct Data {
-    pub state: [f32; 4], // Current state, correspond to `s` in the original Python code. Below are the same.
-    pub action: u8,      // Action taken, correspond to `a`
-    pub reward: f32,     // Reward received, correspond to `r`
-    pub next_state: [f32; 4], // Next state, correspond to `s_prime`
-    pub done: bool,      // Episode done flag, correspond to `done`
-}
-
-impl Data {
-    pub fn from_step_result(
-        raw_state: CartPoleObservation,
-        step: ActionReward<CartPoleObservation, ()>,
-        action: u8,
-    ) -> Self {
-        let mut original_state: [f32; 4] = [0.0; 4];
-        let mut next_state: [f32; 4] = [0.0; 4];
-
-        for (index, element) in Vec::from(step.observation).iter().enumerate() {
-            next_state[index] = element.to_f32();
-        }
-
-        for (index, element) in Vec::from(raw_state).iter().enumerate() {
-            original_state[index] = element.to_f32();
-        }
-
-        Self {
-            state: original_state,
-            action,
-            reward: step.reward.to_f32() / 100.0,
-            next_state,
-            done: step.done,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DataBatch<B>
-where
-    B: Backend,
-{
-    pub state: Tensor<B, 2>,
-    pub action: Tensor<B, 2, Int>,
-    pub reward: Tensor<B, 2>,
-    pub next_state: Tensor<B, 2>,
-    pub done: Tensor<B, 2>,
-}
-
-pub struct ReplayBuffer {
-    buffer: VecDeque<Data>
-}
-
-impl ReplayBuffer {
-    pub fn new() -> Self {
-        Self { buffer: VecDeque::new() }
-    }
-    
-    pub fn put(&mut self, transition: Data) {
-        self.buffer.push_back(transition); // add to the right end of the deque
-    }
-    
-    pub fn sample<B: Backend>(&mut self, device: &B::Device) -> DataBatch<B> {
-        let mut rng: rand::prelude::ThreadRng = rng();
-        let mini_batches: Vec<&Data> = self.buffer.iter().choose_multiple(&mut rng, BATCH_SIZE);
-        
-        let mut states: [[f32; 4]; BATCH_SIZE] = [[0.0; 4]; BATCH_SIZE];
-        let mut actions: [[u8; 1]; BATCH_SIZE] = [[0; 1]; BATCH_SIZE];
-        let mut rewards: [[f32; 1]; BATCH_SIZE] = [[0.0; 1]; BATCH_SIZE];
-        let mut next_states: [[f32; 4]; BATCH_SIZE] = [[0.0; 4]; BATCH_SIZE];
-        let mut dones: [[u8; 1]; BATCH_SIZE] = [[0; 1]; BATCH_SIZE];
-        
-        for (index, transition) in mini_batches.iter().enumerate() {
-            states[index] = transition.state;
-            actions[index] = [transition.action];
-            rewards[index] = [transition.reward];
-            next_states[index] = transition.next_state;
-
-            if transition.done {
-                dones[index] = [0];
-                continue;
-            }
-
-            dones[index] = [1];
-        }
-        
-        let state: Tensor<B, 2> = Tensor::from_data(states, device);
-        let action: Tensor<B, 2, Int> = Tensor::from_data(actions, device);
-        let reward: Tensor<B, 2> = Tensor::from_data(rewards, device);
-        let next_state: Tensor<B, 2> = Tensor::from_data(next_states, device);
-        let done: Tensor<B, 2> = Tensor::from_data(dones, device);
-        
-        DataBatch {
-            state, action, reward, next_state, done
-        }
-    }
-    
-    pub fn size(&self) -> usize {
-        self.buffer.len()
-    }
-}
 
 #[derive(Debug, Module)]
 pub struct QNet<B: Backend> {
@@ -185,19 +84,19 @@ pub fn train<O: SimpleOptimizer<B::InnerBackend>, B: AutodiffBackend>(
 ) -> QNet<B> {
     let mut q_net_optimized: QNet<B> = q_net;
     for _ in 0..10 {
-        let data_batch: DataBatch<B> = replay_buffer.sample::<B>(device);
+        let data_batch: DataBatch<B> = replay_buffer.sample::<B, BATCH_SIZE>(device);
         
-        let q_net_output: Tensor<B, 2> = q_net_optimized.forward(data_batch.state);
-        let q_net_output_to_action: Tensor<B, 2> = q_net_output.gather(1, data_batch.action);
+        let q_net_output: Tensor<B, 2> = q_net_optimized.forward(data_batch.states);
+        let q_net_output_to_action: Tensor<B, 2> = q_net_output.gather(1, data_batch.actions);
         // This might differ from the original Python approach, but I am not sure.
         // I experimented with it, and I found the below code has the same shape as the one in Python. 
         // In Python, the below variable is named as `max_q_prime`.
-        let target_network_output: Tensor<B, 2> = target_network.forward(data_batch.next_state)
+        let target_network_output: Tensor<B, 2> = target_network.forward(data_batch.next_states)
             .max_dim(1);
             // .select(0, Tensor::from_data([0], device))
             // .unsqueeze_dim(1); // DIVERGENCE: differ from the original python code 
         
-        let target: Tensor<B, 2> = data_batch.reward + GAMMA * target_network_output * data_batch.done;
+        let target: Tensor<B, 2> = data_batch.rewards + GAMMA * target_network_output * data_batch.dones;
         
         // This is also known as `smooth L1 loss` in PyTorch. 
         // The 1.0 delta value originates from PyTorch default.
@@ -242,7 +141,7 @@ pub fn run_session() -> Result<()> {
             
             done = result.done;
             memory.put(
-                Data::from_step_result(result.observation, result, action as u8)
+                Data::from_step_result(result.observation, result, action as u8, 0.0)
             );
             raw_state = result.observation;
             
