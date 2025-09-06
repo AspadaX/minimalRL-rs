@@ -27,6 +27,7 @@ use crate::shared::replay_buffer::ReplayBuffer;
 const LEARNING_RATE: f64 = 0.0005;
 const GAMMA: f32 = 0.98;
 const BATCH_SIZE: usize = 32;
+const MAX_CAPACITY: usize = 50000;
 
 #[derive(Debug, Module)]
 pub struct QNet<B: Backend> {
@@ -59,7 +60,7 @@ where
     /// Either use the model output as the action, 
     /// or to use a random digit between 0 and 1
     pub fn sample_action(&mut self, observation: Tensor<B, 1>, epsilon: f32) -> usize {
-        let output: Tensor<B, 1> = self.forward(observation);
+        let output: Tensor<B, 1> = self.forward(observation).detach();
         let coin: f32 = rand::random();
         if coin < epsilon {
             return rand::random_range(0..=1);
@@ -68,8 +69,10 @@ where
         // the 0-dim is the correct input, 
         // which will result in the same argmax tensor as the Python one
         let argmax_tensor: Tensor<B, 1, Int> = output.argmax(0);
+
+        let scalar = argmax_tensor.into_scalar().to_usize();
         
-        argmax_tensor.into_scalar().to_usize()
+        scalar
     }
 }
 
@@ -117,8 +120,9 @@ pub fn run_session() -> Result<()> {
 
     let device: NdArrayDevice = NdArrayDevice::default();
     let mut q_net: QNet<Autodiff<NdArray>> = QNet::new(&device);
-    let q_target_net: QNet<Autodiff<NdArray>> = QNet::new(&device);
-    let mut memory: ReplayBuffer = ReplayBuffer::new();
+    let mut q_target_net: QNet<Autodiff<NdArray>> = QNet::new(&device);
+    // We specify the max capacity during the compile time
+    let mut memory: ReplayBuffer = ReplayBuffer::new::<MAX_CAPACITY>();
     let mut optimizer: OptimizerAdaptor<Adam, QNet<Autodiff<NdArray>>, Autodiff<NdArray>> = AdamConfig::new().init();
 
     let mut score: f32 = 0.0;
@@ -126,22 +130,32 @@ pub fn run_session() -> Result<()> {
 
     for n_epi in 0..10000 {
         let epsilon: f32 = f32::max(0.01, 0.08 - 0.01 * ( n_epi as f32 / 200.0));
-        let (mut raw_state, _) = env.reset(None, false, None);
+        let (raw_state, _) = env.reset(None, false, None);
+
         let mut done: bool = false;
+        let mut previous_state: CartPoleObservation = raw_state;
         
         while !done {
             // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-            let state_data: TensorData = TensorData::new(Vec::from(raw_state), Shape::new([4]));
-            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
+            let state_data: TensorData = TensorData::new(Vec::from(previous_state), Shape::new([4]));
+            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device).detach(); 
             
             let action: usize = q_net.sample_action(state, epsilon);
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
             
             done = result.done;
-            // memory.put(
-            //     Data::from_step_result(result.observation, result, action as u8, 0.0)
-            // );
-            raw_state = result.observation;
+            memory.put(
+                Data::from_step_result(
+                    previous_state, 
+                    result.observation, 
+                    action as u8, 
+                    0.0, // We don't use action probability here
+                    done,
+                    result.reward.to_f32() / 100.0,
+                )
+            );
+
+            previous_state = result.observation;
             
             score += result.reward.to_f32();
             
@@ -155,6 +169,7 @@ pub fn run_session() -> Result<()> {
         }
         
         if (n_epi % print_interval == 0) && (n_epi != 0) {
+            q_target_net = q_net.clone();    
             println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
             score = 0.0;
         }

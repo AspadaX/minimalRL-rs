@@ -1,33 +1,41 @@
+use std::collections::VecDeque;
+
 use burn::{prelude::Backend, tensor::{Int, Shape, Tensor}};
 use rand::{rng, rngs::ThreadRng, seq::IteratorRandom};
 
 use crate::shared::data_structs::{Data, DataBatch};
 
 pub struct ReplayBuffer {
-    buffer: Vec<Data>,
+    // Why do we use VecDeque, but not array nor Vec?
+    // VecDeque is a double-ended queue, which is more efficient than Vec when we want to pop the first element.
+    buffer: VecDeque<Data>,
     rng: ThreadRng
 }
 
 impl ReplayBuffer {
-    pub fn new() -> Self {
+    pub fn new<const C: usize>() -> Self {
         Self {
-            buffer: Vec::new(),
+            buffer: VecDeque::with_capacity(C),
             rng: rng()
         }
     }
     
     pub fn put(&mut self, transition: Data) {
-        self.buffer.push(transition);
+        if self.buffer.len() == self.buffer.capacity() {
+            self.buffer.pop_front();
+        }
+
+        self.buffer.push_back(transition);
     }
     
-    pub fn sample<B: Backend, const BATCH_SIZE: usize>(&mut self, device: &B::Device) -> DataBatch<B> {
-        let mini_batches: Vec<&Data> = self.buffer.iter().choose_multiple(&mut self.rng, BATCH_SIZE);
+    pub fn sample<B: Backend, const S: usize>(&mut self, device: &B::Device) -> DataBatch<B> {
+        let mini_batches: Vec<&Data> = self.buffer.iter().choose_multiple(&mut self.rng, S);
         
-        let mut states: [[f32; 4]; BATCH_SIZE] = [[0.0; 4]; BATCH_SIZE];
-        let mut actions: [[u8; 1]; BATCH_SIZE] = [[0; 1]; BATCH_SIZE];
-        let mut rewards: [[f32; 1]; BATCH_SIZE] = [[0.0; 1]; BATCH_SIZE];
-        let mut next_states: [[f32; 4]; BATCH_SIZE] = [[0.0; 4]; BATCH_SIZE];
-        let mut dones: [[u8; 1]; BATCH_SIZE] = [[0; 1]; BATCH_SIZE];
+        let mut states: [[f32; 4]; S] = [[0.0; 4]; S];
+        let mut actions: [[u8; 1]; S] = [[0; 1]; S];
+        let mut rewards: [[f32; 1]; S] = [[0.0; 1]; S];
+        let mut next_states: [[f32; 4]; S] = [[0.0; 4]; S];
+        let mut dones: [[u8; 1]; S] = [[0; 1]; S];
         
         for (index, transition) in mini_batches.iter().enumerate() {
             states[index] = transition.state;
@@ -55,7 +63,7 @@ impl ReplayBuffer {
             rewards: rewards_data,
             next_states: next_states_data,
             dones: dones_data,
-            action_probabilities: Tensor::zeros(Shape::new([BATCH_SIZE, 2]), device) // This is not used in the DQN. Just a filler.
+            action_probabilities: Tensor::zeros(Shape::new([S, 2]), device) // This is not used in the DQN. Just a filler.
         }
     }
     
