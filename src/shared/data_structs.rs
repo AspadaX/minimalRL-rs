@@ -1,5 +1,5 @@
 use burn::{prelude::Backend, tensor::{cast::ToElement, Int, Tensor}};
-use gym_rs::{core::ActionReward, envs::classical_control::cartpole::CartPoleObservation};
+use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 
 /// What's included in the data
 ///
@@ -17,29 +17,31 @@ pub struct Data {
 
 impl Data {
     pub fn from_step_result(
-        raw_state: CartPoleObservation,
-        step: ActionReward<CartPoleObservation, ()>,
+        previous_state: CartPoleObservation,
+        new_state: CartPoleObservation,
         action: u8,
         action_probability: f64,
+        done: bool,
+        reward: f32,
     ) -> Self {
-        let mut original_state: [f32; 4] = [0.0; 4];
-        let mut next_state: [f32; 4] = [0.0; 4];
+        let mut previous_state_array: [f32; 4] = [0.0; 4];
+        let mut new_state_array: [f32; 4] = [0.0; 4];
 
-        for (index, element) in Vec::from(step.observation).iter().enumerate() {
-            next_state[index] = element.to_f32();
+        for (index, element) in Vec::from(new_state).iter().enumerate() {
+            new_state_array[index] = element.to_f32();
         }
 
-        for (index, element) in Vec::from(raw_state).iter().enumerate() {
-            original_state[index] = element.to_f32();
+        for (index, element) in Vec::from(previous_state).iter().enumerate() {
+            previous_state_array[index] = element.to_f32();
         }
 
         Self {
-            state: original_state,
+            state: previous_state_array,
             action,
-            reward: step.reward.to_f32() / 100.0,
-            next_state,
+            reward,
+            next_state: new_state_array,
             action_probability,
-            done: step.done,
+            done,
         }
     }
 }

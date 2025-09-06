@@ -242,46 +242,49 @@ pub fn run_session() -> Result<()> {
     let print_interval: usize = 20;
 
     for n_epi in 0..10000 {
-        let (mut raw_state, _) = env.reset(None, false, None);
+        let (raw_state, _) = env.reset(None, false, None);
         let mut done: bool = false;
 
+        let mut previous_state: CartPoleObservation = raw_state;
+
         while !done {
-            for _ in 0..T_HORIZON {
-                // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-                let state_data: TensorData = TensorData::new(Vec::from(raw_state), Shape::new([4]));
-                let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
-                // Feed the state to the policy network
-                let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
-                let probability_vector: Vec<f32> = probability
-                    .to_data()
-                    .convert::<f32>()
-                    .to_vec::<f32>()
-                    .unwrap();
+            // Reflect the shape of the state, which is 1-dimensional array with 4 elements
+            let state_data: TensorData = TensorData::new(Vec::from(previous_state), Shape::new([4]));
+            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
+            // Feed the state to the policy network
+            let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
+            let probability_vector: Vec<f32> = probability
+                .to_data()
+                .convert::<f32>()
+                .to_vec::<f32>()
+                .unwrap();
 
-                let action: usize = sample_action(&probability_vector)?;
+            let action: usize = sample_action(&probability_vector)?;
 
-                let result: ActionReward<CartPoleObservation, ()> = env.step(action);
-                // Now, this turn's observation has become the next turn's previous observation
-                raw_state = result.observation;
-                done = result.done;
+            let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+            // Now, this turn's observation has become the next turn's previous observation
+            done = result.done;
 
-                // Reward is already f32, no need to turn into floating points
-                score += result.reward.to_f32();
+            score += result.reward.to_f32();
 
-                let data: Data = Data::from_step_result(
-                    raw_state,
-                    result,
-                    action as u8,
-                    probability_vector[action] as f64,
-                );
-                model.put_data(data);
+            let data: Data = Data::from_step_result(
+                previous_state,
+                result.observation,
+                action as u8,
+                probability_vector[action] as f64,
+                done,
+                result.reward.to_f32() / 100.0,
+            );
+            model.put_data(data);
+            // Update the previous state with the new state we got in this turn
+            previous_state = result.observation;
 
-                if done {
-                    break;
-                }
+            // We update the model every T_HORIZON steps
+            // This is different from the Python implementation, 
+            // because the Rust implementation uses fixed length for the data buffer.
+            if model.data.len() == T_HORIZON {
+                model.train_net();
             }
-
-            model.train_net();
         }
 
         if (n_epi % print_interval == 0) && (n_epi != 0) {

@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use anyhow::Result;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
@@ -140,9 +138,9 @@ pub fn run_session() -> Result<()> {
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
             
             done = result.done;
-            memory.put(
-                Data::from_step_result(result.observation, result, action as u8, 0.0)
-            );
+            // memory.put(
+            //     Data::from_step_result(result.observation, result, action as u8, 0.0)
+            // );
             raw_state = result.observation;
             
             score += result.reward.to_f32();
