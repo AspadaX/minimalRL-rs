@@ -1,6 +1,6 @@
 use anyhow::Result;
-use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
+use burn::backend::ndarray::NdArrayDevice;
 use burn::module::Module;
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
 use burn::tensor::Shape;
@@ -29,7 +29,7 @@ const LAMBDA: f32 = 0.95;
 const EPS_CLIP: f32 = 0.1;
 const K_EPOCH: usize = 3;
 // Time Horizon, the rounds passed before starting a training
-const T_HORIZON: usize = 20; 
+const T_HORIZON: usize = 20;
 
 #[derive(Debug, Module)]
 pub struct PPOModule<B: Backend> {
@@ -50,7 +50,7 @@ where
     module: PPOModule<T>,
     optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T>,
     device: T::Device,
-    relu: Relu
+    relu: Relu,
 }
 
 impl<T> PPO<T>
@@ -88,7 +88,7 @@ where
             optimizer,
             data: vec![],
             device,
-            relu: Relu::new()
+            relu: Relu::new(),
         }
     }
 
@@ -144,17 +144,21 @@ where
     }
 
     /// The policy function
-    /// 
-    /// We will use the policy function in two places, 
+    ///
+    /// We will use the policy function in two places,
     /// one is when training the model,
-    /// another is when inferencing the model. 
-    /// 
-    /// Since the two will use different tensor dimensions, 
-    /// using a constant generic parameter, const X: usize, 
-    /// will allowing the differences. 
-    /// 
-    /// The `x` here will be determined when you compile the code. 
-    pub fn pi<const X: usize>(&mut self, x: Tensor<T, X>, softmax_dim: Option<usize>) -> Tensor<T, X> {
+    /// another is when inferencing the model.
+    ///
+    /// Since the two will use different tensor dimensions,
+    /// using a constant generic parameter, const X: usize,
+    /// will allowing the differences.
+    ///
+    /// The `x` here will be determined when you compile the code.
+    pub fn pi<const X: usize>(
+        &mut self,
+        x: Tensor<T, X>,
+        softmax_dim: Option<usize>,
+    ) -> Tensor<T, X> {
         // Softmax dimension is default to 0
         let mut softmax_dimension: usize = 0;
         if let Some(dim) = softmax_dim {
@@ -200,29 +204,38 @@ where
             // Calculate the ratio for clipping
             let pi: Tensor<T, 2> = self.pi(data_tensor.states.clone(), Some(1));
             let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.actions.clone());
-            // We use clamp_min here to prevent NaN values 
-            // This is equal to a / b 
-            let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log() - data_tensor.action_probabilities.clone().clamp_min(1e-8).log()).exp();
+            // We use clamp_min here to prevent NaN values
+            // This is equal to a / b
+            let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log()
+                - data_tensor
+                    .action_probabilities
+                    .clone()
+                    .clamp_min(1e-8)
+                    .log())
+            .exp();
 
-            // We have both unclipped and clipped surrogate objective here, 
-            // then we need to choose the minimal one from them. 
-            // This is to ensure the knowledge to learn, aka gradient update, won't be too aggressive. 
-            let unclipped_surrogate_advantage: Tensor<T, 2> = ratio.clone() * advantage_tensor.clone();
+            // We have both unclipped and clipped surrogate objective here,
+            // then we need to choose the minimal one from them.
+            // This is to ensure the knowledge to learn, aka gradient update, won't be too aggressive.
+            let unclipped_surrogate_advantage: Tensor<T, 2> =
+                ratio.clone() * advantage_tensor.clone();
             let clipped_surrogate_advantage: Tensor<T, 2> =
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
-            
-            // This is also known as `smooth L1 loss` in PyTorch. 
+
+            // This is also known as `smooth L1 loss` in PyTorch.
             // The 1.0 delta value originates from PyTorch default.
             let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
-            
-            // We choose the minimal clipped objective by using `min_pair`. 
-            // Then we calculate the loss with it. 
-            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage.min_pair(clipped_surrogate_advantage)
+
+            // We choose the minimal clipped objective by using `min_pair`.
+            // Then we calculate the loss with it.
+            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage
+                .min_pair(clipped_surrogate_advantage)
                 + huber_loss
                     .forward_no_reduction(self.v(data_tensor.states.clone()), td_target.detach());
 
             let gradients: <T as AutodiffBackend>::Gradients = loss.mean().backward();
-            let gradients_params: GradientsParams = GradientsParams::from_grads(gradients, &self.module);
+            let gradients_params: GradientsParams =
+                GradientsParams::from_grads(gradients, &self.module);
 
             self.module = self
                 .optimizer
@@ -249,8 +262,9 @@ pub fn run_session() -> Result<()> {
 
         while !done {
             // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-            let state_data: TensorData = TensorData::new(Vec::from(previous_state), Shape::new([4]));
-            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
+            let state_data: TensorData =
+                TensorData::new(Vec::from(previous_state), Shape::new([4]));
+            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device);
             // Feed the state to the policy network
             let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
             let probability_vector: Vec<f32> = probability
@@ -280,7 +294,7 @@ pub fn run_session() -> Result<()> {
             previous_state = result.observation;
 
             // We update the model every T_HORIZON steps
-            // This is different from the Python implementation, 
+            // This is different from the Python implementation,
             // because the Rust implementation uses fixed length for the data buffer.
             if model.data.len() == T_HORIZON {
                 model.train_net();
@@ -288,7 +302,11 @@ pub fn run_session() -> Result<()> {
         }
 
         if (n_epi % print_interval == 0) && (n_epi != 0) {
-            println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
+            println!(
+                "# of episode :{}, avg score : {}",
+                n_epi,
+                score / print_interval as f32
+            );
             score = 0.0;
         }
     }

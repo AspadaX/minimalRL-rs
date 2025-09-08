@@ -1,4 +1,7 @@
-use burn::{prelude::Backend, tensor::{cast::ToElement, Int, Tensor}};
+use burn::{
+    prelude::Backend,
+    tensor::{Int, Tensor, cast::ToElement},
+};
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 
 /// What's included in the data
