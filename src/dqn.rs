@@ -83,7 +83,7 @@ pub fn train<O: SimpleOptimizer<B::InnerBackend>, B: AutodiffBackend>(
 ) -> QNet<B> {
     let mut q_net_optimized: QNet<B> = q_net;
     for _ in 0..10 {
-        let data_batch: DataBatch<B> = replay_buffer.sample::<B, BATCH_SIZE>(device);
+        let data_batch: DataBatch<B> = replay_buffer.sample_batch::<B, BATCH_SIZE>(device);
 
         let q_net_output: Tensor<B, 2> = q_net_optimized.forward(data_batch.states);
         let q_net_output_to_action: Tensor<B, 2> = q_net_output.gather(1, data_batch.actions);

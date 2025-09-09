@@ -31,7 +31,7 @@ impl ReplayBuffer {
         self.buffer.push_back(transition);
     }
 
-    pub fn sample<B: Backend, const S: usize>(&mut self, device: &B::Device) -> DataBatch<B> {
+    pub fn sample_batch<B: Backend, const S: usize>(&mut self, device: &B::Device) -> DataBatch<B> {
         let mini_batches: Vec<&Data> = self.buffer.iter().choose_multiple(&mut self.rng, S);
 
         let mut states: [[f32; 4]; S] = [[0.0; 4]; S];

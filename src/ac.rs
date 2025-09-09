@@ -20,7 +20,7 @@ use gym_rs::{
 };
 use rand::{Rng, rng};
 
-use crate::shared::utilities::sample_action;
+use crate::shared::{replay_buffer::ReplayBuffer, utilities::sample_action};
 
 // Hyperparameters
 const LEARNING_RATE: f32 = 0.0002;
@@ -67,6 +67,30 @@ where
 
         self.value_function_fully_connected_layer.forward(x)
     }
+    
+    pub fn train(&mut self, optimizer: OptimizerAdaptor<>, replay_buffer: &mut ReplayBuffer, device: &Backend::Device) {
+        let batch = replay_buffer.sample_batch(device);
+        let temporal_difference_target = batch.rewards + GAMMA * self.use_value_function(batch.next_states) * batch.dones;
+        let delta = temporal_difference_target - self.use_value_function(batch.states);
+        
+        let policy = self.use_policy_function(batch.states, 1);
+        let policy_action = policy.gather(1, batch.actions);
+        
+        // This is also known as `smooth L1 loss` in PyTorch.
+        // The 1.0 delta value originates from PyTorch default.
+        let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
+        let loss = -policy_action.log() * delta.detach() + huber_loss
+            .forward_no_reduction(
+                self.use_value_function(batch.states), temporal_difference_target.detach()
+            );
+
+        let gradients = loss.backward();
+        self = optimizer.step(
+            LEARNING_RATE as f64,
+            self.clone(),
+            GradientsParams::from_grads(gradients, &model),
+        );
+    }
 }
 
 pub fn compute_temporarl_difference_target<B: Backend, const D: usize>(
@@ -96,47 +120,6 @@ pub fn compute_temporarl_difference_target<B: Backend, const D: usize>(
         TensorData::new(temporal_difference_target, [UPDATE_INTERVAL]),
         device,
     )
-}
-
-pub fn test<B: Backend>(step_idx: usize, model: &ActorCritic<B>) -> Result<()> {
-    let mut env: CartPoleEnv = CartPoleEnv::new(RenderMode::None);
-    let mut score: f32 = 0.0;
-    let mut done: bool = false;
-    let number_test: usize = 10;
-
-    for _ in 0..number_test {
-        let (state, _) = env.reset(Some(rng().random()), false, None);
-        let mut previous_state = state;
-
-        while !done {
-            let array_state: [f32; 4] = convert_to_array(previous_state);
-            let probability: Tensor<B, 1> =
-                model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
-            let action: usize = sample_action(
-                &probability
-                    .to_data()
-                    .convert::<f32>()
-                    .to_vec::<f32>()
-                    .unwrap(),
-            )?;
-            let result: ActionReward<CartPoleObservation, ()> = env.step(action);
-
-            // Record the state we get from this turn
-            previous_state = result.observation;
-            score += result.reward.to_f32();
-            done = result.done;
-        }
-
-        done = false;
-    }
-
-    println!(
-        "Episode # :{}, avg score : {}",
-        step_idx,
-        score / number_test as f32
-    );
-
-    Ok(())
 }
 
 pub fn convert_to_array(state: CartPoleObservation) -> [f32; 4] {
