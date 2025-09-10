@@ -1,17 +1,15 @@
 use anyhow::Result;
 use burn::{
-    backend::{Autodiff, NdArray, ndarray::NdArrayDevice},
-    module::Module,
+    backend::{ndarray::NdArrayDevice, Autodiff, NdArray},
+    module::{AutodiffModule, Module},
     nn::{
-        Linear, LinearConfig, Relu,
-        loss::HuberLossConfig,
+        loss::HuberLossConfig, Linear, LinearConfig, Relu
     },
     optim::{
-        Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor,
-        decay::WeightDecayConfig,
+        adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig, GradientsParams, Optimizer, SimpleOptimizer
     },
     prelude::Backend,
-    tensor::{Int, Tensor, TensorData, activation::softmax, cast::ToElement},
+    tensor::{activation::softmax, backend::AutodiffBackend, cast::ToElement, Int, Tensor, TensorData},
 };
 use gym_rs::{
     core::{ActionReward, Env},
@@ -20,7 +18,7 @@ use gym_rs::{
 };
 use rand::{Rng, rng};
 
-use crate::shared::{replay_buffer::ReplayBuffer, utilities::sample_action};
+use crate::shared::{data_structs::Data, replay_buffer::{self, ReplayBuffer}, utilities::sample_action};
 
 // Hyperparameters
 const LEARNING_RATE: f32 = 0.0002;
@@ -39,7 +37,7 @@ pub struct ActorCritic<B: Backend> {
 
 impl<B> ActorCritic<B>
 where
-    B: Backend,
+    B: Backend + AutodiffBackend,
 {
     pub fn new(device: &B::Device) -> Self {
         Self {
@@ -68,58 +66,43 @@ where
         self.value_function_fully_connected_layer.forward(x)
     }
     
-    pub fn train(&mut self, optimizer: OptimizerAdaptor<>, replay_buffer: &mut ReplayBuffer, device: &Backend::Device) {
-        let batch = replay_buffer.sample_batch(device);
-        let temporal_difference_target = batch.rewards + GAMMA * self.use_value_function(batch.next_states) * batch.dones;
-        let delta = temporal_difference_target - self.use_value_function(batch.states);
-        
-        let policy = self.use_policy_function(batch.states, 1);
+    pub fn train<O>(&mut self, optimizer: &mut OptimizerAdaptor<O, Self, B>, replay_buffer: &mut ReplayBuffer, device: &B::Device)
+    where
+        O: SimpleOptimizer<B::InnerBackend>,
+    {
+        // Sample a batch from replay buffer
+        let batch = replay_buffer.sample_batch::<B, UPDATE_INTERVAL>(device);
+
+        // Compute TD target and advantage (delta)
+        let temporal_difference_target = batch.rewards
+            + GAMMA * self.use_value_function(batch.next_states) * batch.dones;
+        let delta = temporal_difference_target.clone() - self.use_value_function(batch.states.clone());
+
+        // Policy loss component
+        let policy = self.use_policy_function(batch.states.clone(), Some(1));
         let policy_action = policy.gather(1, batch.actions);
-        
-        // This is also known as `smooth L1 loss` in PyTorch.
-        // The 1.0 delta value originates from PyTorch default.
+
+        // Value loss component (Huber)
         let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
-        let loss = -policy_action.log() * delta.detach() + huber_loss
-            .forward_no_reduction(
-                self.use_value_function(batch.states), temporal_difference_target.detach()
+        let loss = -policy_action.log() * delta.detach()
+            + huber_loss.forward_no_reduction(
+                self.use_value_function(batch.states),
+                temporal_difference_target.detach(),
             );
 
+        // Back-propagate
         let gradients = loss.backward();
-        self = optimizer.step(
+
+        // Optimizer step — returns updated model
+        let updated = optimizer.step(
             LEARNING_RATE as f64,
             self.clone(),
-            GradientsParams::from_grads(gradients, &model),
+            GradientsParams::from_grads(gradients, self),
         );
+
+        // Update self in-place
+        *self = updated;
     }
-}
-
-pub fn compute_temporarl_difference_target<B: Backend, const D: usize>(
-    value_function_result: &Tensor<B, D>,
-    rewards: &[[f32; 1]; UPDATE_INTERVAL],
-    dones: &[[usize; 1]; UPDATE_INTERVAL],
-    device: &B::Device,
-) -> Tensor<B, 1> {
-    let mut temporal_difference_target: Vec<f32> = Vec::new();
-
-    let mut value_function_result_scalar: f32 = value_function_result
-        .to_data()
-        .convert::<f32>()
-        .to_vec::<f32>()
-        .unwrap()[0];
-
-    for index in (0..UPDATE_INTERVAL).rev() {
-        let done_mask = 1.0 - dones[index][0] as f32;
-        value_function_result_scalar =
-            rewards[index][0] + GAMMA * value_function_result_scalar * done_mask;
-        temporal_difference_target.push(value_function_result_scalar);
-    }
-
-    temporal_difference_target.reverse();
-
-    Tensor::from_data(
-        TensorData::new(temporal_difference_target, [UPDATE_INTERVAL]),
-        device,
-    )
 }
 
 pub fn convert_to_array(state: CartPoleObservation) -> [f32; 4] {
@@ -144,20 +127,20 @@ pub fn run_session() -> Result<()> {
             .with_epsilon(1e-08)
             .with_weight_decay(Some(WeightDecayConfig::new(0.0)))
             .init();
+    let mut replay_buffer = ReplayBuffer::new::<MAX_TRAIN_EPISODES>();
+    let mut score: f32 = 0.0;
 
     for n_epi in 0..MAX_TRAIN_EPISODES {
-        let mut states: [[f32; 4]; UPDATE_INTERVAL] = [[0.0; 4]; UPDATE_INTERVAL];
-        let mut actions: [[u32; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
-        let mut rewards: [[f32; 1]; UPDATE_INTERVAL] = [[0.0; 1]; UPDATE_INTERVAL];
-        let mut dones: [[usize; 1]; UPDATE_INTERVAL] = [[0; 1]; UPDATE_INTERVAL];
+        // Reset environment at the beginning of each episode
+        let (mut state, _) = env.reset(Some(rng().random()), false, None);
+        let mut step_in_episode: usize = 0;
+        let mut done: bool = false;
 
-        let (state, _) = env.reset(Some(rng().random()), false, None);
-        let mut previous_state = state;
-
-        for index in 0..UPDATE_INTERVAL {
-            let array_state: [f32; 4] = convert_to_array(previous_state);
+        // Roll out until the episode terminates
+        while !done {
+            // Choose an action from the current policy
             let probability: Tensor<Autodiff<NdArray>, 1> =
-                model.use_policy_function::<1>(Tensor::from(array_state), Some(0));
+                model.use_policy_function::<1>(Tensor::from(convert_to_array(state)), Some(0));
             let action: usize = sample_action(
                 &probability
                     .to_data()
@@ -166,60 +149,45 @@ pub fn run_session() -> Result<()> {
                     .unwrap(),
             )?;
 
+            // Step the environment
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
 
-            states[index] = array_state;
-            actions[index] = [action as u32];
-            rewards[index] = [result.reward.to_f32() / 100.0];
+            // Accumulate reward for logging
+            score += result.reward.to_f32();
 
-            if result.done {
-                dones[index] = [1];
-            } else {
-                dones[index] = [0];
+            // Push transition into replay buffer (scale reward just like Py impl: r/100)
+            replay_buffer.put(
+                Data::from_step_result(
+                    state,                              // s
+                    result.observation,                 // s'
+                    action as u8,                       // a
+                    0.0,                                // prob_a (unused)
+                    result.done,                        // done
+                    result.reward.to_f32() / 100.0,     // r (scaled)
+                ),
+            );
+
+            // Update current state & done flag
+            state = result.observation;
+            done = result.done;
+            step_in_episode += 1;
+
+            // 6. Perform an update every `UPDATE_INTERVAL` steps OR when episode terminates
+            if (step_in_episode % UPDATE_INTERVAL == 0) || done {
+                // Only train when we have enough samples in the buffer
+                if replay_buffer.size() >= UPDATE_INTERVAL {
+                    model.train(&mut optimizer, &mut replay_buffer, &device);
+                }
             }
-
-            // Record the state we get from this turn
-            previous_state = result.observation;
         }
 
-        let value_function_result: Tensor<Autodiff<NdArray>, 1> =
-            model.use_value_function(convert_to_array(previous_state).into());
-        let temporal_difference_target: Tensor<Autodiff<NdArray>, 1> =
-            compute_temporarl_difference_target(&value_function_result, &rewards, &dones, &device);
-
-        let states_tensor: Tensor<Autodiff<NdArray>, 2> = Tensor::from(states);
-        let actions_tensor: Tensor<Autodiff<NdArray>, 2, Int> = Tensor::from(actions);
-
-        let value_function_results: Tensor<Autodiff<NdArray>, 1> = model
-            .use_value_function(states_tensor.clone())
-            .reshape([-1]);
-        let advantage: Tensor<Autodiff<NdArray>, 1> =
-            temporal_difference_target.clone() - value_function_results.clone();
-
-        let policy_function_result: Tensor<Autodiff<NdArray>, 2> =
-            model.use_policy_function(states_tensor, None);
-        let policy_action: Tensor<Autodiff<NdArray>, 1> = policy_function_result
-            .gather(1, actions_tensor)
-            .reshape([-1]);
-
-        // This is also known as `smooth L1 loss` in PyTorch.
-        // The 1.0 delta value originates from PyTorch default.
-        let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
-        let loss: Tensor<Autodiff<NdArray>, 1> = -(policy_action.log() * advantage.detach()).mean()
-            + huber_loss
-                .forward_no_reduction(
-                    value_function_results.clone(), temporal_difference_target.detach()
-                );
-
-        let gradients = loss.backward();
-        model = optimizer.step(
-            LEARNING_RATE as f64,
-            model.clone(),
-            GradientsParams::from_grads(gradients, &model),
-        );
-
         if (n_epi % PRINT_INTERVAL == 0) && (n_epi != 0) {
-            test(n_epi, &model)?;
+            println!(
+                "# of episode :{}, avg score : {}",
+                n_epi,
+                score / PRINT_INTERVAL as f32
+            );
+            score = 0.0;
         }
     }
 
