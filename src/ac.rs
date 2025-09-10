@@ -1,7 +1,7 @@
 use anyhow::Result;
 use burn::{
     backend::{ndarray::NdArrayDevice, Autodiff, NdArray},
-    module::{AutodiffModule, Module},
+    module::Module,
     nn::{
         loss::HuberLossConfig, Linear, LinearConfig, Relu
     },
@@ -9,7 +9,7 @@ use burn::{
         adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig, GradientsParams, Optimizer, SimpleOptimizer
     },
     prelude::Backend,
-    tensor::{activation::softmax, backend::AutodiffBackend, cast::ToElement, Int, Tensor, TensorData},
+    tensor::{activation::softmax, backend::AutodiffBackend, cast::ToElement, Tensor},
 };
 use gym_rs::{
     core::{ActionReward, Env},
@@ -18,7 +18,7 @@ use gym_rs::{
 };
 use rand::{Rng, rng};
 
-use crate::shared::{data_structs::Data, replay_buffer::{self, ReplayBuffer}, utilities::sample_action};
+use crate::shared::{data_structs::Data, replay_buffer::ReplayBuffer, utilities::sample_action};
 
 // Hyperparameters
 const LEARNING_RATE: f32 = 0.0002;
