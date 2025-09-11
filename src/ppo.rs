@@ -1,6 +1,6 @@
 use anyhow::Result;
-use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::NdArray;
+use burn::backend::ndarray::NdArrayDevice;
 use burn::module::Module;
 use burn::optim::{Adam, AdamConfig, adaptor::OptimizerAdaptor, decay::WeightDecayConfig};
 use burn::tensor::Shape;
@@ -19,7 +19,8 @@ use gym_rs::{
     utils::renderer::RenderMode,
 };
 
-use crate::utilities::sample_action;
+use crate::shared::data_structs::{Data, DataBatch};
+use crate::shared::utilities::sample_action;
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
@@ -28,66 +29,7 @@ const LAMBDA: f32 = 0.95;
 const EPS_CLIP: f32 = 0.1;
 const K_EPOCH: usize = 3;
 // Time Horizon, the rounds passed before starting a training
-const T_HORIZON: usize = 20; 
-
-/// What's included in the data
-///
-/// The difference is that the Python version does not need to know the data size at "compile time",
-/// but Rust does.
-#[derive(Debug, Clone)]
-pub struct Data {
-    pub state: [f32; 4], // Current state, correspond to `s` in the original Python code. Below are the same.
-    pub action: u8,      // Action taken, correspond to `a`
-    pub reward: f32,     // Reward received, correspond to `r`
-    pub next_state: [f32; 4], // Next state, correspond to `s_prime`
-    pub action_prob: f64, // Action probability, correspond to `prob_a`
-    pub done: bool,      // Episode done flag, correspond to `done`
-}
-
-impl Data {
-    pub fn from_step_result(
-        raw_state: CartPoleObservation,
-        step: ActionReward<CartPoleObservation, ()>,
-        action: u8,
-        action_prob: f64,
-    ) -> Self {
-        let mut original_state: [f32; 4] = [0.0; 4];
-        let mut next_state: [f32; 4] = [0.0; 4];
-
-        for (index, element) in Vec::from(step.observation).iter().enumerate() {
-            next_state[index] = element.to_f32();
-        }
-
-        for (index, element) in Vec::from(raw_state).iter().enumerate() {
-            original_state[index] = element.to_f32();
-        }
-
-        Self {
-            state: original_state,
-            action,
-            reward: step.reward.to_f32() / 100.0,
-            next_state,
-            action_prob,
-            done: step.done,
-        }
-    }
-}
-
-/// A batch of data
-///
-/// Tensor<B, 2> reads: a tensor of two dimensions
-#[derive(Debug, Clone)]
-pub struct DataBatch<B>
-where
-    B: Backend,
-{
-    pub state: Tensor<B, 2>,
-    pub action: Tensor<B, 2, Int>,
-    pub reward: Tensor<B, 2>,
-    pub next_state: Tensor<B, 2>,
-    pub action_prob: Tensor<B, 2>,
-    pub done: Tensor<B, 2>,
-}
+const T_HORIZON: usize = 20;
 
 #[derive(Debug, Module)]
 pub struct PPOModule<B: Backend> {
@@ -108,7 +50,7 @@ where
     module: PPOModule<T>,
     optimizer: OptimizerAdaptor<Adam, PPOModule<T>, T>,
     device: T::Device,
-    relu: Relu
+    relu: Relu,
 }
 
 impl<T> PPO<T>
@@ -146,7 +88,7 @@ where
             optimizer,
             data: vec![],
             device,
-            relu: Relu::new()
+            relu: Relu::new(),
         }
     }
 
@@ -172,7 +114,7 @@ where
             actions[index] = [data.action];
             rewards[index] = [data.reward];
             next_states[index] = data.next_state;
-            action_probs[index] = [data.action_prob];
+            action_probs[index] = [data.action_probability];
 
             if data.done {
                 dones[index] = [0];
@@ -182,37 +124,41 @@ where
             dones[index] = [1];
         }
 
-        let state: Tensor<T, 2> = Tensor::from_data(states, &self.device);
-        let action: Tensor<T, 2, Int> = Tensor::from_data(actions, &self.device);
-        let reward: Tensor<T, 2> = Tensor::from_data(rewards, &self.device);
-        let next_state: Tensor<T, 2> = Tensor::from_data(next_states, &self.device);
-        let action_prob: Tensor<T, 2> = Tensor::from_data(action_probs, &self.device);
-        let done: Tensor<T, 2> = Tensor::from_data(dones, &self.device);
+        let states_data: Tensor<T, 2> = Tensor::from_data(states, &self.device);
+        let actions_data: Tensor<T, 2, Int> = Tensor::from_data(actions, &self.device);
+        let rewards_data: Tensor<T, 2> = Tensor::from_data(rewards, &self.device);
+        let next_states_data: Tensor<T, 2> = Tensor::from_data(next_states, &self.device);
+        let action_probs_data: Tensor<T, 2> = Tensor::from_data(action_probs, &self.device);
+        let dones_data: Tensor<T, 2> = Tensor::from_data(dones, &self.device);
 
         self.data.clear();
 
         DataBatch {
-            state,
-            action,
-            reward,
-            next_state,
-            action_prob,
-            done,
+            states: states_data,
+            actions: actions_data,
+            rewards: rewards_data,
+            next_states: next_states_data,
+            action_probabilities: action_probs_data,
+            dones: dones_data,
         }
     }
 
     /// The policy function
-    /// 
-    /// We will use the policy function in two places, 
+    ///
+    /// We will use the policy function in two places,
     /// one is when training the model,
-    /// another is when inferencing the model. 
-    /// 
-    /// Since the two will use different tensor dimensions, 
-    /// using a constant generic parameter, const X: usize, 
-    /// will allowing the differences. 
-    /// 
-    /// The `x` here will be determined when you compile the code. 
-    pub fn pi<const X: usize>(&mut self, x: Tensor<T, X>, softmax_dim: Option<usize>) -> Tensor<T, X> {
+    /// another is when inferencing the model.
+    ///
+    /// Since the two will use different tensor dimensions,
+    /// using a constant generic parameter, const X: usize,
+    /// will allowing the differences.
+    ///
+    /// The `x` here will be determined when you compile the code.
+    pub fn pi<const X: usize>(
+        &mut self,
+        x: Tensor<T, X>,
+        softmax_dim: Option<usize>,
+    ) -> Tensor<T, X> {
         // Softmax dimension is default to 0
         let mut softmax_dimension: usize = 0;
         if let Some(dim) = softmax_dim {
@@ -239,9 +185,9 @@ where
 
         for _ in 0..K_EPOCH {
             // Calculate the advantage
-            let td_target: Tensor<T, 2> = data_tensor.reward.clone()
-                + GAMMA * self.v(data_tensor.next_state.clone()) * data_tensor.done.clone();
-            let delta: Tensor<T, 2> = td_target.clone() - self.v(data_tensor.state.clone());
+            let td_target: Tensor<T, 2> = data_tensor.rewards.clone()
+                + GAMMA * self.v(data_tensor.next_states.clone()) * data_tensor.dones.clone();
+            let delta: Tensor<T, 2> = td_target.clone() - self.v(data_tensor.states.clone());
             let delta: Tensor<T, 2> = delta.detach();
 
             let mut advantage_list: [[f32; 1]; T_HORIZON] = [[0.0; 1]; T_HORIZON];
@@ -256,31 +202,40 @@ where
             let advantage_tensor: Tensor<T, 2> = Tensor::from_data(advantage_list, &self.device);
 
             // Calculate the ratio for clipping
-            let pi: Tensor<T, 2> = self.pi(data_tensor.state.clone(), Some(1));
-            let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.action.clone());
-            // We use clamp_min here to prevent NaN values 
-            // This is equal to a / b 
-            let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log() - data_tensor.action_prob.clone().clamp_min(1e-8).log()).exp();
+            let pi: Tensor<T, 2> = self.pi(data_tensor.states.clone(), Some(1));
+            let pi_action: Tensor<T, 2> = pi.gather(1, data_tensor.actions.clone());
+            // We use clamp_min here to prevent NaN values
+            // This is equal to a / b
+            let ratio: Tensor<T, 2> = (pi_action.clamp_min(1e-8).log()
+                - data_tensor
+                    .action_probabilities
+                    .clone()
+                    .clamp_min(1e-8)
+                    .log())
+            .exp();
 
-            // We have both unclipped and clipped surrogate objective here, 
-            // then we need to choose the minimal one from them. 
-            // This is to ensure the knowledge to learn, aka gradient update, won't be too aggressive. 
-            let unclipped_surrogate_advantage: Tensor<T, 2> = ratio.clone() * advantage_tensor.clone();
+            // We have both unclipped and clipped surrogate objective here,
+            // then we need to choose the minimal one from them.
+            // This is to ensure the knowledge to learn, aka gradient update, won't be too aggressive.
+            let unclipped_surrogate_advantage: Tensor<T, 2> =
+                ratio.clone() * advantage_tensor.clone();
             let clipped_surrogate_advantage: Tensor<T, 2> =
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
-            
-            // This is also known as `smooth L1 loss` in PyTorch. 
+
+            // This is also known as `smooth L1 loss` in PyTorch.
             // The 1.0 delta value originates from PyTorch default.
             let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
-            
-            // We choose the minimal clipped objective by using `min_pair`. 
-            // Then we calculate the loss with it. 
-            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage.min_pair(clipped_surrogate_advantage)
+
+            // We choose the minimal clipped objective by using `min_pair`.
+            // Then we calculate the loss with it.
+            let loss: Tensor<T, 2> = -unclipped_surrogate_advantage
+                .min_pair(clipped_surrogate_advantage)
                 + huber_loss
-                    .forward_no_reduction(self.v(data_tensor.state.clone()), td_target.detach());
+                    .forward_no_reduction(self.v(data_tensor.states.clone()), td_target.detach());
 
             let gradients: <T as AutodiffBackend>::Gradients = loss.mean().backward();
-            let gradients_params: GradientsParams = GradientsParams::from_grads(gradients, &self.module);
+            let gradients_params: GradientsParams =
+                GradientsParams::from_grads(gradients, &self.module);
 
             self.module = self
                 .optimizer
@@ -300,50 +255,58 @@ pub fn run_session() -> Result<()> {
     let print_interval: usize = 20;
 
     for n_epi in 0..10000 {
-        let (mut raw_state, _) = env.reset(None, false, None);
+        let (raw_state, _) = env.reset(None, false, None);
         let mut done: bool = false;
 
+        let mut previous_state: CartPoleObservation = raw_state;
+
         while !done {
-            for _ in 0..T_HORIZON {
-                // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-                let state_data: TensorData = TensorData::new(Vec::from(raw_state), Shape::new([4]));
-                let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device); 
-                // Feed the state to the policy network
-                let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
-                let probability_vector: Vec<f32> = probability
-                    .to_data()
-                    .convert::<f32>()
-                    .to_vec::<f32>()
-                    .unwrap();
+            // Reflect the shape of the state, which is 1-dimensional array with 4 elements
+            let state_data: TensorData =
+                TensorData::new(Vec::from(previous_state), Shape::new([4]));
+            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device);
+            // Feed the state to the policy network
+            let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
+            let probability_vector: Vec<f32> = probability
+                .to_data()
+                .convert::<f32>()
+                .to_vec::<f32>()
+                .unwrap();
 
-                let action: usize = sample_action(&probability_vector)?;
+            let action: usize = sample_action(&probability_vector)?;
 
-                let result: ActionReward<CartPoleObservation, ()> = env.step(action);
-                // Now, this turn's observation has become the next turn's previous observation
-                raw_state = result.observation;
-                done = result.done;
+            let result: ActionReward<CartPoleObservation, ()> = env.step(action);
+            // Now, this turn's observation has become the next turn's previous observation
+            done = result.done;
 
-                // Reward is already f32, no need to turn into floating points
-                score += result.reward.to_f32();
+            score += result.reward.to_f32();
 
-                let data: Data = Data::from_step_result(
-                    raw_state,
-                    result,
-                    action as u8,
-                    probability_vector[action] as f64,
-                );
-                model.put_data(data);
+            let data: Data = Data::from_step_result(
+                previous_state,
+                result.observation,
+                action as u8,
+                probability_vector[action] as f64,
+                done,
+                result.reward.to_f32() / 100.0,
+            );
+            model.put_data(data);
+            // Update the previous state with the new state we got in this turn
+            previous_state = result.observation;
 
-                if done {
-                    break;
-                }
+            // We update the model every T_HORIZON steps
+            // This is different from the Python implementation,
+            // because the Rust implementation uses fixed length for the data buffer.
+            if model.data.len() == T_HORIZON {
+                model.train_net();
             }
-
-            model.train_net();
         }
 
         if (n_epi % print_interval == 0) && (n_epi != 0) {
-            println!("# of episode :{}, avg score : {}", n_epi, score / print_interval as f32);
+            println!(
+                "# of episode :{}, avg score : {}",
+                n_epi,
+                score / print_interval as f32
+            );
             score = 0.0;
         }
     }
