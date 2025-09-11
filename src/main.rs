@@ -9,9 +9,6 @@ mod sac;
 mod shared;
 
 fn main() -> Result<()> {
-    ac::run_session();
-    return Ok(());
-
     println!("Please choose an algorithm to run (ppo, dqn, ac): ");
     let mut input: String = String::new();
     let buffer: Stdin = stdin();
