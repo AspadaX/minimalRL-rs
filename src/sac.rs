@@ -1,4 +1,4 @@
-use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend};
+use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::softplus, linalg::vector_normalize, Tensor}};
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 
 use crate::shared::data_structs::DataBatch;
@@ -22,7 +22,18 @@ impl PolicyNet<B: Backend> {
         }
     }
     
-    pub fn forward(&mut self) {}
+    pub fn forward(&mut self, x: Tensor<B, 2>) -> (u8, Tensor<B, 2>) {
+        let x = self.relu.forward(self.fully_connected_layer_one.forward(x));
+        let mean = self.fully_connected_layer_mean_output.forward(x);
+        let standard_deviation = softplus(
+            self.fully_connected_layer_standard_deviation.forward(x),
+            beta
+        );
+
+        vector_normalize(x, norm, dim, eps)
+
+        ()
+    }
 }
 
 /// class PolicyNet(nn.Module):
