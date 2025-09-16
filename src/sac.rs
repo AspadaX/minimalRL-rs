@@ -38,11 +38,11 @@ impl PolicyNet<B: Backend> {
         let mean = self.fully_connected_layer_mean_output.forward(x);
         let standard_deviation = softplus(
             self.fully_connected_layer_standard_deviation.forward(x),
-            beta
+            1.0 // originates from /torch/nn/modules/activation.py
         );
         
         let mut rng: rand::prelude::ThreadRng = rng();
-        let normal_distribution: Distribution = Distribution::Normal(mean, standard_deviation);
+        let normal_distribution: Distribution = Distribution::Normal(mean, standard_deviation.into_scalar());
         let action = normal_distribution
             .sampler(&mut rng)
             .sample();
@@ -55,7 +55,7 @@ impl PolicyNet<B: Backend> {
     }
 }
 
-/// class PolicyNet(nn.Module):
+// class PolicyNet(nn.Module):
     // def __init__(self, learning_rate):
     //     super(PolicyNet, self).__init__()
     //     self.fc1 = nn.Linear(3, 128)
