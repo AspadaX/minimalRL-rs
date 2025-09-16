@@ -1,5 +1,6 @@
-use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::softplus, linalg::vector_normalize, Tensor}};
+use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, softplus, tanh}, linalg::vector_normalize, Distribution, Tensor}};
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
+use rand::rng;
 
 use crate::shared::data_structs::DataBatch;
 
@@ -22,6 +23,16 @@ impl PolicyNet<B: Backend> {
         }
     }
     
+    // def forward(self, x):
+    //     x = F.relu(self.fc1(x))
+    //     mu = self.fc_mu(x)
+    //     std = F.softplus(self.fc_std(x))
+    //     dist = Normal(mu, std)
+    //     action = dist.rsample()
+    //     log_prob = dist.log_prob(action)
+    //     real_action = torch.tanh(action)
+    //     real_log_prob = log_prob - torch.log(1-torch.tanh(action).pow(2) + 1e-7)
+    //     return real_action, real_log_prob
     pub fn forward(&mut self, x: Tensor<B, 2>) -> (u8, Tensor<B, 2>) {
         let x = self.relu.forward(self.fully_connected_layer_one.forward(x));
         let mean = self.fully_connected_layer_mean_output.forward(x);
@@ -29,10 +40,18 @@ impl PolicyNet<B: Backend> {
             self.fully_connected_layer_standard_deviation.forward(x),
             beta
         );
+        
+        let mut rng: rand::prelude::ThreadRng = rng();
+        let normal_distribution: Distribution = Distribution::Normal(mean, standard_deviation);
+        let action = normal_distribution
+            .sampler(&mut rng)
+            .sample();
+        
+        let action_log_proability = log_softmax(action, 1);
+        let action = tanh(action_log_proability);
+        let log_probability = action_log_proability - (1 - action.powf_scalar(2) + 1e-7).log();
 
-        vector_normalize(x, norm, dim, eps)
-
-        ()
+        (action, log_probability)
     }
 }
 
