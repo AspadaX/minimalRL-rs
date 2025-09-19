@@ -1,8 +1,8 @@
-use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, softplus, tanh}, linalg::vector_normalize, Distribution, Tensor}};
+use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, softplus, tanh}, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 use rand::rng;
 
-use crate::shared::data_structs::DataBatch;
+use crate::shared::{data_structs::DataBatch, utilities::compute_logprob};
 
 #[derive(Debug, Module)]
 pub struct PolicyNet<B: Backend> 
@@ -13,7 +13,10 @@ pub struct PolicyNet<B: Backend>
     relu: Relu
 }
 
-impl PolicyNet<B: Backend> {
+impl<B> PolicyNet<B> 
+where
+    B: Backend
+{
     pub fn new(device: &B::Device) -> Self {
         Self { 
             fully_connected_layer_one: LinearConfig::new(3, 128).init(device), 
@@ -33,25 +36,22 @@ impl PolicyNet<B: Backend> {
     //     real_action = torch.tanh(action)
     //     real_log_prob = log_prob - torch.log(1-torch.tanh(action).pow(2) + 1e-7)
     //     return real_action, real_log_prob
-    pub fn forward(&mut self, x: Tensor<B, 2>) -> (u8, Tensor<B, 2>) {
+    pub fn forward<const D: usize>(&mut self, x: Tensor<B, D>) -> (Tensor<B, D>, Tensor<B, D>) {
         let x = self.relu.forward(self.fully_connected_layer_one.forward(x));
         let mean = self.fully_connected_layer_mean_output.forward(x);
         let standard_deviation = softplus(
             self.fully_connected_layer_standard_deviation.forward(x),
             1.0 // originates from /torch/nn/modules/activation.py
         );
-        
-        let mut rng: rand::prelude::ThreadRng = rng();
-        let normal_distribution: Distribution = Distribution::Normal(mean, standard_deviation.into_scalar());
-        let action = normal_distribution
-            .sampler(&mut rng)
-            .sample();
-        
-        let action_log_proability = log_softmax(action, 1);
-        let action = tanh(action_log_proability);
-        let log_probability = action_log_proability - (1 - action.powf_scalar(2) + 1e-7).log();
 
-        (action, log_probability)
+        let action = mean.clone() + standard_deviation.clone() * mean.random_like(Distribution::Normal(0.0, 1.0));
+        let action_log_probability = compute_logprob(action.clone(), mean, standard_deviation);
+
+        let real_action = tanh(action.clone());
+
+        let log_probability = action_log_probability - (real_action.clone().ones_like() - real_action.clone().powf_scalar(2.0) + real_action.clone().full_like(1e-7)).log();
+
+        (real_action, log_probability)
     }
 }
 
