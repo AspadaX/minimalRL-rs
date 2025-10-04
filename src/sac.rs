@@ -1,8 +1,83 @@
-use burn::{module::Module, nn::{Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, softplus, tanh}, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
+use burn::{module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, relu, softplus, tanh}, backend::AutodiffBackend, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
 use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
 use rand::rng;
 
-use crate::shared::{data_structs::DataBatch, utilities::compute_logprob};
+use crate::{shared::{data_structs::{Data, DataBatch}, utilities::{compute_logprob, create_huber_loss, initialize_adam_optimizer}}};
+
+const POLICY_LEARNING_RATE: f32 = 0.0005;
+const Q_LEARNING_RATE: f32 = 0.001;
+const INIT_ALPHA: f32 = 0.01;
+const GAMMA: f32 = 0.98;
+const BATCH_SIZE: usize = 32;
+const BUFFER_LIMIT: usize = 50000;
+const TAU: f32 = 0.01; // For target network soft update
+const TARGET_ENTROPY: f32 = -1.0; // For automated alpha update
+const ALPHA_LEARNING_RATE: f32 = 0.001; // Same as above
+
+#[derive(Debug, Module)]
+pub struct QNet<B> 
+where 
+    B: AutodiffBackend
+{
+    fc_state: Linear<B>,
+    fc_action: Linear<B>,
+    fc_cat: Linear<B>,
+    fc_out: Linear<B>,
+    relu: Relu,
+    optimizer: OptimizerAdaptor<Adam, QNet<B>, B>,
+}
+
+impl<B> QNet<B>
+where
+    B: AutodiffBackend,
+{
+    pub fn new(device: &B::Device) -> Self {
+        Self {
+            fc_state: LinearConfig::new(3, 64).init(device),
+            fc_action: LinearConfig::new(1, 64).init(device),
+            fc_cat: LinearConfig::new(128, 32).init(device),
+            fc_out: LinearConfig::new(32, 1).init(device),
+            relu: Relu::new(),
+            optimizer: initialize_adam_optimizer(),
+        }
+    }
+
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D>, a: Tensor<B, D>) -> Tensor<B, D> {
+        let hidden_layer_one = relu(self.fc_state.forward(x));
+        let hidden_layer_two = relu(self.fc_action.forward(a));
+        let cat = Tensor::cat(vec![hidden_layer_one, hidden_layer_two], 1);
+        let q = relu(self.fc_cat.forward(cat));
+        let q = self.fc_out.forward(q);
+
+        q
+    }
+
+    pub fn train_net<const D: usize>(&mut self, target: Tensor<B, D>, transition: Data) {
+        let huber_loss = create_huber_loss();
+        let loss = huber_loss.forward_no_reduction(self.forward(transition.state.into(), [transition.action as usize].into()), target);
+        
+        let optimizer = initialize_adam_optimizer();
+        optimizer.step(Q_LEARNING_RATE, self, loss.mean());
+    }
+
+    /// Either use the model output as the action,
+    /// or to use a random digit between 0 and 1
+    pub fn sample_action(&mut self, observation: Tensor<B, 1>, epsilon: f32) -> usize {
+        let output: Tensor<B, 1> = self.forward(observation).detach();
+        let coin: f32 = rand::random();
+        if coin < epsilon {
+            return rand::random_range(0..=1);
+        }
+
+        // the 0-dim is the correct input,
+        // which will result in the same argmax tensor as the Python one
+        let argmax_tensor: Tensor<B, 1, Int> = output.argmax(0);
+
+        let scalar = argmax_tensor.into_scalar().to_usize();
+
+        scalar
+    }
+}
 
 #[derive(Debug, Module)]
 pub struct PolicyNet<B: Backend> 
@@ -10,7 +85,8 @@ pub struct PolicyNet<B: Backend>
     fully_connected_layer_one: Linear<B>,
     fully_connected_layer_mean_output: Linear<B>,
     fully_connected_layer_standard_deviation: Linear<B>,
-    relu: Relu
+    relu: Relu,
+    log_alpha: Tensor<B, 1>,
 }
 
 impl<B> PolicyNet<B> 
@@ -18,17 +94,21 @@ where
     B: Backend
 {
     pub fn new(device: &B::Device) -> Self {
+        let log_alpha = Tensor::from_floats([INIT_ALPHA], device);
+        let log_alpha = log_alpha.log();
+
         Self { 
             fully_connected_layer_one: LinearConfig::new(3, 128).init(device), 
             fully_connected_layer_mean_output: LinearConfig::new(128, 1).init(device), 
             fully_connected_layer_standard_deviation: LinearConfig::new(128, 1).init(device), 
-            relu: Relu::new()
+            relu: Relu::new(),
+            log_alpha: log_alpha.require_grad(),
         }
     }
     
-    pub fn forward<const D: usize>(&mut self, x: Tensor<B, D>) -> (Tensor<B, D>, Tensor<B, D>) {
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> (Tensor<B, D>, Tensor<B, D>) {
         let x = self.relu.forward(self.fully_connected_layer_one.forward(x));
-        let mean = self.fully_connected_layer_mean_output.forward(x);
+        let mean = self.fully_connected_layer_mean_output.forward(x.clone());
         let standard_deviation = softplus(
             self.fully_connected_layer_standard_deviation.forward(x),
             1.0 // originates from /torch/nn/modules/activation.py
@@ -62,7 +142,14 @@ where
     //     alpha_loss = -(self.log_alpha.exp() * (log_prob + target_entropy).detach()).mean()
     //     alpha_loss.backward()
     //     self.log_alpha_optimizer.step()
-    pub fn train_net(&self, q_net_one: QNet, q_net_two: QNet, transition: DataBatch) {}
+    pub fn train_net(&self, q_net_one: QNet<B>, q_net_two: QNet<B>, transition: DataBatch<B>) {
+        let (action, log_probability) = self.forward(transition.states);
+        // In Rust, the 1-dimensional tensor cannot multiply with a 2-dimensional tensor, which is log_probability. 
+        // Hence, we convert it to a f32 digit before performing a multiplication. 
+        let entropy = -self.log_alpha.clone().exp().into_scalar().to_f32() * log_probability;
+
+        let (q1_value, q2_value) = // need to define a new Q-Net that tailors to SAC
+    }
 }
 
 // class PolicyNet(nn.Module):

@@ -1,4 +1,4 @@
-use burn::{module::AutodiffModule, optim::{adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig}, prelude::Backend, tensor::Tensor};
+use burn::{module::AutodiffModule, nn::loss::{HuberLoss, HuberLossConfig}, optim::{adaptor::OptimizerAdaptor, decay::WeightDecayConfig, Adam, AdamConfig}, prelude::Backend, tensor::{backend::AutodiffBackend, Tensor}};
 use rand::{Rng, distr::weighted::WeightedIndex, rng};
 
 /// Shared function for sampling actions from a proability
@@ -12,7 +12,7 @@ pub fn sample_action(probability: &Vec<f32>) -> Result<usize, anyhow::Error> {
 }
 
 /// Initialize an Adam optimizer with default config which resembles that of PyTorch
-pub fn initialize_adam_optimizer() -> OptimizerAdaptor<Adam, AutodiffModule<B>, B> 
+pub fn initialize_adam_optimizer<B: AutodiffBackend, M: AutodiffModule<B>>() -> OptimizerAdaptor<Adam, M, B> 
 {
     AdamConfig::new()
         .with_beta_1(0.9)
@@ -29,4 +29,10 @@ pub fn compute_logprob<const D: usize, B: Backend>(a: Tensor<B, D>, mu: Tensor<B
     let l = (a - mu).powf_scalar(2.0).div(std2.clone() + 1e-6);
     let r = (std2.mul_scalar(2.0 * std::f32::consts::PI)).log();
     (l + r).mul_scalar(-0.5)
+}
+
+/// This is also known as `smooth L1 loss` in PyTorch.
+/// The 1.0 delta value originates from PyTorch default.
+pub fn create_huber_loss() -> HuberLoss {
+    HuberLossConfig::new(1.0).init()
 }
