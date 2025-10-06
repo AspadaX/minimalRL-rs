@@ -1,8 +1,9 @@
-use burn::{module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, relu, softplus, tanh}, backend::AutodiffBackend, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
-use gym_rs::envs::classical_control::cartpole::CartPoleObservation;
+use anyhow::Result;
+use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, relu, softplus, tanh}, backend::AutodiffBackend, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
+use gym_rs::{core::Env, envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation}, utils::renderer::RenderMode};
 use rand::rng;
 
-use crate::{shared::{data_structs::{Data, DataBatch}, utilities::{compute_logprob, create_huber_loss, initialize_adam_optimizer}}};
+use crate::shared::{data_structs::{Data, DataBatch}, replay_buffer::ReplayBuffer, utilities::{compute_logprob, convert_carte_pole_observation_to_tensor, create_huber_loss, initialize_adam_optimizer}};
 
 const POLICY_LEARNING_RATE: f32 = 0.0005;
 const Q_LEARNING_RATE: f32 = 0.001;
@@ -15,16 +16,13 @@ const TARGET_ENTROPY: f32 = -1.0; // For automated alpha update
 const ALPHA_LEARNING_RATE: f32 = 0.001; // Same as above
 
 #[derive(Debug, Module)]
-pub struct QNet<B> 
-where 
-    B: AutodiffBackend
+pub struct QNet<B: Backend> 
 {
     fc_state: Linear<B>,
     fc_action: Linear<B>,
     fc_cat: Linear<B>,
     fc_out: Linear<B>,
     relu: Relu,
-    optimizer: OptimizerAdaptor<Adam, QNet<B>, B>,
 }
 
 impl<B> QNet<B>
@@ -38,7 +36,6 @@ where
             fc_cat: LinearConfig::new(128, 32).init(device),
             fc_out: LinearConfig::new(32, 1).init(device),
             relu: Relu::new(),
-            optimizer: initialize_adam_optimizer(),
         }
     }
 
@@ -52,30 +49,14 @@ where
         q
     }
 
-    pub fn train_net<const D: usize>(&mut self, target: Tensor<B, D>, transition: Data) {
+    // Train the net. It returns the loss for optimizers. 
+    pub fn train_net<const D: usize>(&mut self, target: Tensor<B, D>, transition: Data) -> Tensor<B, D> {
         let huber_loss = create_huber_loss();
-        let loss = huber_loss.forward_no_reduction(self.forward(transition.state.into(), [transition.action as usize].into()), target);
-        
-        let optimizer = initialize_adam_optimizer();
-        optimizer.step(Q_LEARNING_RATE, self, loss.mean());
+        huber_loss.forward_no_reduction(self.forward(transition.state.into(), [transition.action as usize].into()), target)
     }
 
-    /// Either use the model output as the action,
-    /// or to use a random digit between 0 and 1
-    pub fn sample_action(&mut self, observation: Tensor<B, 1>, epsilon: f32) -> usize {
-        let output: Tensor<B, 1> = self.forward(observation).detach();
-        let coin: f32 = rand::random();
-        if coin < epsilon {
-            return rand::random_range(0..=1);
-        }
-
-        // the 0-dim is the correct input,
-        // which will result in the same argmax tensor as the Python one
-        let argmax_tensor: Tensor<B, 1, Int> = output.argmax(0);
-
-        let scalar = argmax_tensor.into_scalar().to_usize();
-
-        scalar
+    pub fn soft_update<const D: usize>(&mut self, net_target: QNet<B>) -> Tensor<B, D> {
+        net_target.para
     }
 }
 
@@ -150,6 +131,58 @@ where
 
         let (q1_value, q2_value) = // need to define a new Q-Net that tailors to SAC
     }
+}
+
+pub fn run_session() -> Result<()> {
+    let mut env = CartPoleEnv::new(RenderMode::None);
+
+    let device = NdArrayDevice::default();
+    let mut memory = ReplayBuffer::new::<BUFFER_LIMIT>();
+
+    let policy_net: PolicyNet<NdArray> = PolicyNet::new(&device);
+    let q_net_one: QNet<Autodiff<NdArray>> = QNet::new(&device);
+    let q_net_two: QNet<Autodiff<NdArray>> = QNet::new(&device);
+    let q_net_one_target: QNet<Autodiff<NdArray>> = QNet::new(&device);
+    let q_net_two_target: QNet<Autodiff<NdArray>> = QNet::new(&device);
+
+    q_net_one_target.load_record(q_net_one.into_record());
+    q_net_two_target.load_record(q_net_two.into_record());
+
+    let mut score: f32 = 0.0;
+    let print_interval: usize = 20;
+
+    for episode in 0..10000 {
+        let (obeservation, _) = env.reset(None, false, None);
+        let mut done = false;
+        let mut count = 0;
+        let mut previous_observation = obeservation;
+
+        while count < 200 && !done {
+            let state: Tensor<NdArray, 1> = convert_carte_pole_observation_to_tensor(obeservation, &device);
+            let (action, log_probability) = policy_net.forward(state);
+
+            let step_result = env.step(action.clone().into_scalar().to_usize());
+            memory.put(
+                // TODO: need to refine the `from_step_result` method
+                Data::from_step_result(
+                    previous_observation, 
+                    step_result.observation, 
+                    action.into_scalar().to_u8(), 
+                    0.0, // this is ignored
+                    step_result.done, 
+                    step_result.reward.to_f32()
+                )
+            );
+
+            score += step_result.reward.to_f32();
+            previous_observation = step_result.observation;
+            count += 1;
+        }
+
+        if memory.size() > 1000 {}
+    }
+
+    Ok(())
 }
 
 // class PolicyNet(nn.Module):

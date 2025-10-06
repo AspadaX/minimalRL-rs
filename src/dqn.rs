@@ -20,6 +20,7 @@ use gym_rs::{
 
 use crate::shared::data_structs::{Data, DataBatch};
 use crate::shared::replay_buffer::ReplayBuffer;
+use crate::shared::utilities::convert_carte_pole_observation_to_tensor;
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
@@ -138,10 +139,7 @@ pub fn run_session() -> Result<()> {
 
         while !done {
             // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-            let state_data: TensorData =
-                TensorData::new(Vec::from(previous_state), Shape::new([4]));
-            let state: Tensor<Autodiff<NdArray>, 1> =
-                Tensor::from_data(state_data, &device).detach();
+            let state: Tensor<Autodiff<NdArray>, 1> = convert_carte_pole_observation_to_tensor(previous_state, &device);
 
             let action: usize = q_net.sample_action(state, epsilon);
             let result: ActionReward<CartPoleObservation, ()> = env.step(action);
