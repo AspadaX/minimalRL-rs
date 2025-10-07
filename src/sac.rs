@@ -179,7 +179,12 @@ pub fn run_session() -> Result<()> {
             count += 1;
         }
 
-        if memory.size() > 1000 {}
+        if memory.size() > 1000 {
+            for _ in 0..20 {
+                let batch: DataBatch<NdArray> = memory.sample_batch::<NdArray, 2>(&device);
+                let temporarl_difference_target = 
+            }
+        }
     }
 
     Ok(())
