@@ -1,5 +1,5 @@
 use anyhow::Result;
-use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, relu, softplus, tanh}, backend::AutodiffBackend, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
+use burn::{backend::{ndarray::NdArrayDevice, Autodiff, NdArray}, data, module::Module, nn::{loss::HuberLossConfig, Linear, LinearConfig, Relu}, optim::{adaptor::OptimizerAdaptor, AdamConfig, Optimizer}, prelude::Backend, tensor::{activation::{log_softmax, relu, softplus, tanh}, backend::AutodiffBackend, cast::ToElement, linalg::vector_normalize, Distribution, Tensor}};
 use gym_rs::{core::Env, envs::classical_control::cartpole::{CartPoleEnv, CartPoleObservation}, utils::renderer::RenderMode};
 use rand::rng;
 
@@ -27,7 +27,7 @@ pub struct QNet<B: Backend>
 
 impl<B> QNet<B>
 where
-    B: AutodiffBackend,
+    B: Backend,
 {
     pub fn new(device: &B::Device) -> Self {
         Self {
@@ -133,20 +133,36 @@ where
     }
 }
 
+pub fn calculate_temporal_difference_target<B: Backend>(
+    policy: &PolicyNet<B>, 
+    q_net_one: &QNet<B>, 
+    q_net_two: &QNet<B>, 
+    data_batch: &DataBatch<B>
+) -> Tensor<B, 2> {
+    let (next_action, log_probability) = policy.forward(data_batch.next_states.clone());
+    let entropy = -policy.log_alpha.clone().exp().into_scalar().to_f32() * log_probability;
+    let q1_value = q_net_one.forward(data_batch.next_states.clone(), next_action.clone());
+    let q2_value = q_net_two.forward(data_batch.next_states.clone(), next_action);
+    let q1_q2_concatenated = Tensor::cat(vec![q1_value, q2_value], 1);
+    let minimum_q = q1_q2_concatenated.min_dim(1);
+    
+    data_batch.rewards.clone() + GAMMA * data_batch.dones.clone() * (minimum_q + entropy)
+}
+
 pub fn run_session() -> Result<()> {
     let mut env = CartPoleEnv::new(RenderMode::None);
 
     let device = NdArrayDevice::default();
     let mut memory = ReplayBuffer::new::<BUFFER_LIMIT>();
 
-    let policy_net: PolicyNet<NdArray> = PolicyNet::new(&device);
-    let q_net_one: QNet<Autodiff<NdArray>> = QNet::new(&device);
-    let q_net_two: QNet<Autodiff<NdArray>> = QNet::new(&device);
-    let q_net_one_target: QNet<Autodiff<NdArray>> = QNet::new(&device);
-    let q_net_two_target: QNet<Autodiff<NdArray>> = QNet::new(&device);
+    let mut policy_net: PolicyNet<NdArray> = PolicyNet::new(&device);
+    let mut q_net_one: QNet<NdArray> = QNet::new(&device);
+    let mut q_net_two: QNet<NdArray> = QNet::new(&device);
+    let mut q_net_one_target: QNet<NdArray> = QNet::new(&device);
+    let mut q_net_two_target: QNet<NdArray> = QNet::new(&device);
 
-    q_net_one_target.load_record(q_net_one.into_record());
-    q_net_two_target.load_record(q_net_two.into_record());
+    q_net_one_target.load_record(q_net_one.clone().into_record());
+    q_net_two_target.load_record(q_net_two.clone().into_record());
 
     let mut score: f32 = 0.0;
     let print_interval: usize = 20;
@@ -182,7 +198,8 @@ pub fn run_session() -> Result<()> {
         if memory.size() > 1000 {
             for _ in 0..20 {
                 let batch: DataBatch<NdArray> = memory.sample_batch::<NdArray, 2>(&device);
-                let temporarl_difference_target = 
+                let temporarl_difference_target = calculate_temporal_difference_target(&policy_net, &q_net_one, &q_net_two, &batch);
+                q_net_one.train_net(temporarl_difference_target, batch);
             }
         }
     }
