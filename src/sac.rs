@@ -50,9 +50,12 @@ where
     }
 
     // Train the net. It returns the loss for optimizers. 
-    pub fn train_net<const D: usize>(&mut self, target: Tensor<B, D>, transition: Data) -> Tensor<B, D> {
+    pub fn train_net(&mut self, target: Tensor<B, 2>, transition: DataBatch<B>) -> Tensor<B, 2> {
         let huber_loss = create_huber_loss();
-        huber_loss.forward_no_reduction(self.forward(transition.state.into(), [transition.action as usize].into()), target)
+        huber_loss.forward_no_reduction::<2, B>(
+            self.forward(transition.states, transition.actions.float()), 
+            target
+        )
     }
 
     pub fn soft_update<const D: usize>(&mut self, net_target: QNet<B>) -> Tensor<B, D> {
@@ -199,7 +202,9 @@ pub fn run_session() -> Result<()> {
             for _ in 0..20 {
                 let batch: DataBatch<NdArray> = memory.sample_batch::<NdArray, 2>(&device);
                 let temporarl_difference_target = calculate_temporal_difference_target(&policy_net, &q_net_one, &q_net_two, &batch);
-                q_net_one.train_net(temporarl_difference_target, batch);
+                q_net_one.train_net(temporarl_difference_target.clone(), batch.clone());
+                q_net_two.train_net(temporarl_difference_target, batch.clone());
+                let entropy = policy_net.train_net(q_net_one, q_net_two, batch);
             }
         }
     }
