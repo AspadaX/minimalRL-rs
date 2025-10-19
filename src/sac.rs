@@ -127,12 +127,18 @@ where
     //     alpha_loss.backward()
     //     self.log_alpha_optimizer.step()
     pub fn train_net(&self, q_net_one: QNet<B>, q_net_two: QNet<B>, transition: DataBatch<B>) {
-        let (action, log_probability) = self.forward(transition.states);
+        let (action, log_probability) = self.forward(transition.states.clone());
         // In Rust, the 1-dimensional tensor cannot multiply with a 2-dimensional tensor, which is log_probability. 
         // Hence, we convert it to a f32 digit before performing a multiplication. 
         let entropy = -self.log_alpha.clone().exp().into_scalar().to_f32() * log_probability;
 
-        let (q1_value, q2_value) = // need to define a new Q-Net that tailors to SAC
+        let q1_value = q_net_one.forward(transition.states.clone(), action.clone());
+        let q2_value = q_net_two.forward(transition.states, action);
+        let q1_q2 = Tensor::cat(vec![q1_value, q2_value], 1);
+        let min_q = q1_q2.min_dim(1);
+        let loss = -min_q - entropy;
+
+        // TODO: Need to take care of the opitmizer
     }
 }
 
