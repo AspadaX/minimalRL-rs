@@ -20,7 +20,7 @@ use gym_rs::{
 };
 
 use crate::shared::data_structs::{Data, DataBatch};
-use crate::shared::utilities::sample_action;
+use crate::shared::utilities::{convert_carte_pole_observation_to_tensor, create_huber_loss, sample_action};
 
 // Hyperparameters
 const LEARNING_RATE: f64 = 0.0005;
@@ -222,9 +222,7 @@ where
             let clipped_surrogate_advantage: Tensor<T, 2> =
                 Tensor::clamp(ratio, 1.0 - EPS_CLIP, 1.0 + EPS_CLIP) * advantage_tensor.clone();
 
-            // This is also known as `smooth L1 loss` in PyTorch.
-            // The 1.0 delta value originates from PyTorch default.
-            let huber_loss: burn::nn::loss::HuberLoss = HuberLossConfig::new(1.0).init();
+            let huber_loss: burn::nn::loss::HuberLoss = create_huber_loss();
 
             // We choose the minimal clipped objective by using `min_pair`.
             // Then we calculate the loss with it.
@@ -262,9 +260,8 @@ pub fn run_session() -> Result<()> {
 
         while !done {
             // Reflect the shape of the state, which is 1-dimensional array with 4 elements
-            let state_data: TensorData =
-                TensorData::new(Vec::from(previous_state), Shape::new([4]));
-            let state: Tensor<Autodiff<NdArray>, 1> = Tensor::from_data(state_data, &device);
+            let state: Tensor<Autodiff<NdArray>, 1> = convert_carte_pole_observation_to_tensor(previous_state, &device);
+
             // Feed the state to the policy network
             let probability: Tensor<Autodiff<NdArray>, 1> = model.pi(state, None);
             let probability_vector: Vec<f32> = probability

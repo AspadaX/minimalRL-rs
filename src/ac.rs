@@ -18,7 +18,7 @@ use gym_rs::{
 };
 use rand::{Rng, rng};
 
-use crate::shared::{data_structs::Data, replay_buffer::ReplayBuffer, utilities::sample_action};
+use crate::shared::{data_structs::Data, replay_buffer::ReplayBuffer, utilities::{convert_carte_pole_observation_to_tensor, sample_action}};
 
 // Hyperparameters
 const LEARNING_RATE: f32 = 0.0002;
@@ -105,15 +105,6 @@ where
     }
 }
 
-pub fn convert_to_array(state: CartPoleObservation) -> [f32; 4] {
-    let mut array_state: [f32; 4] = [0.0; 4];
-    for (index, element) in Vec::from(state).iter().enumerate() {
-        array_state[index] = element.to_owned().to_f32();
-    }
-
-    array_state
-}
-
 pub fn run_session() -> Result<()> {
     let mut env: CartPoleEnv = CartPoleEnv::new(RenderMode::None);
 
@@ -132,15 +123,16 @@ pub fn run_session() -> Result<()> {
 
     for n_epi in 0..MAX_TRAIN_EPISODES {
         // Reset environment at the beginning of each episode
-        let (mut state, _) = env.reset(Some(rng().random()), false, None);
+        let (mut raw_state, _) = env.reset(Some(rng().random()), false, None);
         let mut step_in_episode: usize = 0;
         let mut done: bool = false;
 
         // Roll out until the episode terminates
         while !done {
+            let state: Tensor<Autodiff<NdArray>, 1> = convert_carte_pole_observation_to_tensor(raw_state, &device);
             // Choose an action from the current policy
             let probability: Tensor<Autodiff<NdArray>, 1> =
-                model.use_policy_function::<1>(Tensor::from(convert_to_array(state)), Some(0));
+                model.use_policy_function::<1>(state, Some(0));
             let action: usize = sample_action(
                 &probability
                     .to_data()
@@ -158,7 +150,7 @@ pub fn run_session() -> Result<()> {
             // Push transition into replay buffer (scale reward just like Py impl: r/100)
             replay_buffer.put(
                 Data::from_step_result(
-                    state,                              // s
+                    raw_state,                              // s
                     result.observation,                 // s'
                     action as u8,                       // a
                     0.0,                                // prob_a (unused)
@@ -168,7 +160,7 @@ pub fn run_session() -> Result<()> {
             );
 
             // Update current state & done flag
-            state = result.observation;
+            raw_state = result.observation;
             done = result.done;
             step_in_episode += 1;
 
